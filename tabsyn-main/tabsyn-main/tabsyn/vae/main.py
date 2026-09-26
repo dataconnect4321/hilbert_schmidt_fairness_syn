@@ -21,6 +21,7 @@ from tabsyn.vae.flip_fairness import (
     uniform_attribute_loss_per_sample,
     BalancedGroupSampler,
     RDPAccountant,
+    GroupLevelDPMechanism,
     register_tabsyn_grad_samplers,
     get_dp_trainable_parameters,
 )
@@ -163,8 +164,17 @@ def main(args):
     # per-sample gradients are L2-clipped to max_grad_norm, Gaussian
     # noise with std noise_multiplier * max_grad_norm is added, and the
     # privacy loss is composed over iterations via the RDP accountant.
+    #
+    # The loss is SPLIT into two passes (matching run_flip_demo.py):
+    #   Pass 1 (record-level DP): mse + ce + kld + L_S (per-sample
+    #     decomposable) through Opacus DP-SGD.
+    #   Pass 2 (record-level DP via GroupLevelDPMechanism): the
+    #     batch-coupled SWD + CKA^T fairness gradient, captured with
+    #     Opacus hooks disabled, clipped as one vector (substitution
+    #     sensitivity 2C) and noised - composes with Pass 1's budget.
     use_dp = args.dp and s_groups is not None
     accountant = None
+    group_mech = None
     if use_dp:
         from opacus.optimizers import DPOptimizer
         from opacus.grad_sample import GradSampleModule
@@ -188,15 +198,31 @@ def main(args):
             max_grad_norm=args.max_grad_norm,
             expected_batch_size=batch_size,
         )
-        # RDP accountant: sample rate = batch_size / n_train
-        n_train = X_train_num.shape[0]
+        # RDP accountant: use the MINORITY GROUP's per-step inclusion
+        # probability (gamma_max, Prop. 1 / Eq. 13 of the paper), NOT
+        # batch/N. The balanced sampler shows every minority sample
+        # exactly once per epoch, so its inclusion probability is
+        # per_group_batch / m_minority - LARGER than batch/N, which
+        # would understate epsilon for exactly the group the fairness
+        # intervention targets.
+        groups_np = s_groups.numpy()
+        m_minority = int(np.bincount(groups_np).min())
+        per_group = batch_size // len(np.unique(groups_np))
         accountant = RDPAccountant(
             noise_multiplier=args.noise_multiplier,
-            sample_rate=batch_size / n_train,
+            sample_rate=per_group / m_minority,
             delta=args.dp_delta,
         )
+        # Gaussian mechanism for the batch-coupled fairness gradient
+        # (record-level DP under substitution adjacency; composes with
+        # the DP-SGD budget - see flip_fairness.compose_rdp_budgets).
+        group_mech = GroupLevelDPMechanism(
+            max_group_grad_norm=args.max_group_grad_norm,
+            noise_multiplier=args.group_noise_multiplier,
+        )
         print(f'DP-SGD enabled: noise_multiplier={args.noise_multiplier}, '
-              f'max_grad_norm={args.max_grad_norm}, delta={args.dp_delta}')
+              f'max_grad_norm={args.max_grad_norm}, delta={args.dp_delta}, '
+              f'sample_rate(gamma_max)={per_group / m_minority:.4f}')
     else:
         optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WD)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.95, patience=10, verbose=True)
@@ -277,14 +303,42 @@ def main(args):
                                                            s_idx=s_idx)
 
                 loss_fair_val = div_penalty + lambda_fair * disent
-                loss = loss_mse + loss_ce + beta * loss_kld + loss_s + loss_fair_val
+                loss = loss_mse + loss_ce + beta * loss_kld + loss_s
 
-            loss.backward()
-            optimizer.step()
+            # ---- Pass 1: per-sample-decomposable loss (record-level DP) --
+            # mse + ce + kld + L_S are sums/means of per-sample terms, so
+            # Opacus's per-sample clipping bounds each record's influence.
+            loss.backward(retain_graph=(phase == 2 and use_dp))
 
-            # FLIP: record one DP-SGD iteration for the RDP accountant
-            if accountant is not None:
+            # ---- Pass 2: batch-coupled fairness terms ---------------------
+            # SWD + CKA^T mix samples across the batch; their gradient
+            # cannot be attributed per sample. Under DP they go through
+            # the GroupLevelDPMechanism (clip whole vector, noise) instead
+            # of Opacus - record-level DP under substitution adjacency,
+            # composable with Pass 1's budget.
+            fair_grads = None
+            if phase == 2 and use_dp:
+                model.disable_hooks()
+                try:
+                    fair_grads = torch.autograd.grad(
+                        loss_fair_val, dp_params, allow_unused=True)
+                finally:
+                    model.enable_hooks()
+                fair_grads = {p: g for p, g in zip(dp_params, fair_grads)
+                              if g is not None}
+            elif phase == 2:
+                # Non-DP: accumulate into the same graph
+                loss = loss + loss_fair_val
+                loss.backward()
+
+            if use_dp:
+                if optimizer.pre_step():
+                    if fair_grads:
+                        group_mech.add_noised(dp_params, fair_grads)
+                    optimizer.original_optimizer.step()
                 accountant.step()
+            else:
+                optimizer.step()
 
             batch_length = batch_num.shape[0]
             curr_count += batch_length
@@ -404,6 +458,12 @@ if __name__ == '__main__':
                         help='DP-SGD per-sample gradient L2 clipping norm.')
     parser.add_argument('--dp_delta', type=float, default=1e-5,
                         help='Target delta for the (epsilon, delta)-DP guarantee.')
+    parser.add_argument('--group_noise_multiplier', type=float, default=3.0,
+                        help='Noise multiplier for the batch-coupled fairness '
+                             'gradient mechanism (SWD + CKA^T).')
+    parser.add_argument('--max_group_grad_norm', type=float, default=0.5,
+                        help='L2 clip norm for the whole fairness-gradient '
+                             'vector (substitution sensitivity 2C).')
 
     args = parser.parse_args()
 

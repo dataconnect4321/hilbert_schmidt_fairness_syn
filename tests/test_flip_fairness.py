@@ -35,6 +35,7 @@ from tabsyn.vae.flip_fairness import (
     RDPAccountant,
     GroupLevelDPMechanism,
     dp_release_mean_std,
+    compose_rdp_budgets,
     register_tabsyn_grad_samplers,
     get_dp_trainable_parameters,
 )
@@ -398,15 +399,89 @@ def test_group_mech_privacy_monotone_in_steps():
     assert 0 < e1 < e2
 
 
-def test_group_mech_more_noise_less_epsilon():
-    m_low = GroupLevelDPMechanism(0.5, noise_multiplier=0.5)
-    m_high = GroupLevelDPMechanism(0.5, noise_multiplier=3.0)
+def test_group_mech_sensitivity_2c():
+    """The whole gradient vector is clipped to C, so under substitution
+    adjacency the sensitivity is 2C and each step's RDP must be
+    2*alpha/sigma^2 (NOT alpha/(2*sigma^2), which assumed sensitivity C
+    and under-accounted by 4x)."""
+    mech = GroupLevelDPMechanism(0.5, noise_multiplier=2.0)
+    mech.add_noised([], {})
+    for alpha in [2.0, 10.0, 100.0]:
+        expected = 2.0 * alpha / 4.0  # 2*alpha/sigma^2, one step
+        assert abs(mech.get_rdp_epsilon(alpha) - expected) < 1e-9
+
+
+def test_group_mech_rdp_curve_matches():
+    """get_rdp_curve entries equal get_rdp_epsilon at each alpha."""
+    mech = GroupLevelDPMechanism(0.5, noise_multiplier=2.0)
+    for _ in range(7):
+        mech.add_noised([], {})
+    curve = mech.get_rdp_curve()
+    for alpha, rdp in curve.items():
+        assert abs(rdp - mech.get_rdp_epsilon(alpha)) < 1e-12
+
+
+# --------------------------------------------------------------------------
+# compose_rdp_budgets
+# --------------------------------------------------------------------------
+
+def test_compose_empty_budgets():
+    eps, alpha = compose_rdp_budgets([], 1e-5)
+    assert eps == 0.0 and alpha is None
+
+
+def test_compose_single_budget_matches_standalone():
+    """Composing one budget must equal its own get_privacy_spent."""
+    mech = GroupLevelDPMechanism(0.5, noise_multiplier=2.0)
     for _ in range(50):
-        m_low.add_noised([], {})
-        m_high.add_noised([], {})
-    e_low, _ = m_low.get_privacy_spent(1e-5)
-    e_high, _ = m_high.get_privacy_spent(1e-5)
-    assert e_high < e_low
+        mech.add_noised([], {})
+    eps_direct, _ = mech.get_privacy_spent(1e-5)
+    eps_composed, _ = compose_rdp_budgets([mech.get_rdp_curve()], 1e-5)
+    assert abs(eps_direct - eps_composed) < 1e-9
+
+
+def test_compose_two_budgets_larger_than_either():
+    """Composition is monotone: the combined epsilon must exceed each
+    individual budget's epsilon."""
+    m1 = GroupLevelDPMechanism(0.5, noise_multiplier=2.0)
+    m2 = GroupLevelDPMechanism(0.5, noise_multiplier=4.0)
+    for _ in range(50):
+        m1.add_noised([], {})
+        m2.add_noised([], {})
+    e1, _ = m1.get_privacy_spent(1e-5)
+    e2, _ = m2.get_privacy_spent(1e-5)
+    ec, _ = compose_rdp_budgets(
+        [m1.get_rdp_curve(), m2.get_rdp_curve()], 1e-5)
+    assert ec > e1 and ec > e2
+
+
+def test_compose_not_sum_of_epsilons():
+    """Valid RDP composition (sum RDP per alpha, convert once) is
+    TIGHTER than the invalid rule of adding per-mechanism epsilons,
+    because each mechanism minimizes over a different alpha."""
+    m1 = GroupLevelDPMechanism(0.5, noise_multiplier=2.0)
+    m2 = GroupLevelDPMechanism(0.5, noise_multiplier=4.0)
+    for _ in range(50):
+        m1.add_noised([], {})
+        m2.add_noised([], {})
+    e1, _ = m1.get_privacy_spent(1e-5)
+    e2, _ = m2.get_privacy_spent(1e-5)
+    ec, _ = compose_rdp_budgets(
+        [m1.get_rdp_curve(), m2.get_rdp_curve()], 1e-5)
+    assert ec < e1 + e2
+
+
+def test_compose_stats_release_pairs():
+    """dp_release_mean_std's (alpha, rdp) pair list composes directly."""
+    torch.manual_seed(0)
+    X = torch.randn(500, 4)
+    _, _, rdp = dp_release_mean_std(X, 1.0, 10.0, 500)
+    mech = GroupLevelDPMechanism(0.5, noise_multiplier=2.0)
+    for _ in range(10):
+        mech.add_noised([], {})
+    ec, _ = compose_rdp_budgets(
+        [mech.get_rdp_curve(), rdp], 1e-5)
+    assert np.isfinite(ec) and ec > 0
 
 
 # --------------------------------------------------------------------------

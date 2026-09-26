@@ -197,6 +197,25 @@ class RDPAccountant:
             self._opacus.step(noise_multiplier=self.noise_multiplier,
                               sample_rate=self.sample_rate)
 
+    def get_rdp_curve(self):
+        """Return {alpha: rdp_epsilon} of the accumulated guarantee.
+
+        Needed for composing this budget with others (see
+        compose_rdp_budgets): valid composition sums the RDP at each
+        order alpha and converts to (eps, delta) once, rather than
+        adding per-mechanism epsilons (which is not a valid rule).
+
+        Under the Opacus accountant the subsampled-Gaussian RDP is not
+        exposed per-alpha, so the curve is approximated by the
+        unamplified pure-Gaussian bound - conservative (>= the true
+        RDP at every alpha), so the composed epsilon is a valid upper
+        bound.
+        """
+        if self.steps == 0:
+            return {a: 0.0 for a in self.alphas}
+        return {a: (a / (2.0 * self.noise_multiplier ** 2)) * self.steps
+                for a in self.alphas}
+
     def get_privacy_spent(self):
         """Return (epsilon, optimal_alpha) of the DP guarantee so far.
 
@@ -419,31 +438,33 @@ def uniform_attribute_loss_per_sample(s_logits: torch.Tensor) -> torch.Tensor:
 
 
 class GroupLevelDPMechanism:
-    """Group-level Gaussian mechanism for the batch-coupled fairness
-    losses (sliced-Wasserstein anchor + CKA^T disentanglement).
+    """Gaussian mechanism for the batch-coupled fairness losses
+    (sliced-Wasserstein anchor + CKA^T disentanglement).
 
     WHY THIS EXISTS: DP-SGD's record-level guarantee requires each
-    sample's gradient to be clipped in isolation. The SWD and CKA^T terms
+    sample's gradient to be clipped *in isolation*. The SWD and CKA^T terms
     are batch-level functionals - one record changes the gradient
     attributed to every other record in the batch - so per-sample
     clipping cannot bound any individual's influence for these terms.
     Pretending otherwise (routing them through Opacus) silently voids
     the guarantee.
 
-    WHAT THIS DOES: treats the batch-coupled gradient as a function of
-    the GROUPS in the batch, not of individuals. The gradient is
-    computed on the full batch, clipped to a fixed L2 norm C_g (bounding
-    the sensitivity of the batch-level functional to any single group's
-    data), and noised with Gaussian noise sigma_g * C_g. The resulting
-    guarantee is group-level DP: neighboring datasets differing in all
-    records of one protected group are indistinguishable up to the
-    accounted epsilon. Record-level DP for these terms is NOT claimed.
+    WHAT THIS DOES: computes the batch-coupled gradient on the full
+    batch, clips the ENTIRE gradient vector to a fixed L2 norm C, and
+    adds Gaussian noise with std sigma_g * C. Because the whole vector
+    is clipped, the mechanism's output depends on the data only through
+    a vector of norm <= C: under substitution adjacency (neighboring
+    datasets differ in one record) the sensitivity is 2C, so the
+    effective noise-to-sensitivity ratio is sigma_g/2 and each step's
+    RDP is
+        eps_rdp(alpha) = alpha / (2*(sigma_g/2)^2) = 2*alpha/sigma_g^2
+    (NOT alpha/(2*sigma_g^2) - that assumed sensitivity C and
+    under-accounted by 4x).
 
-    Accounting: each application adds (alpha, alpha/(2*sigma_g^2)) RDP
-    for group-level substitution adjacency; composed over T steps this
-    is T*alpha/(2*sigma_g^2), converted to (eps, delta) as usual. This
-    is conservative (substitution adjacency with full-group change is
-    a stronger neighbor definition than record-level).
+    GUARANTEE: record-level (epsilon, delta)-DP under substitution
+    adjacency for the fairness-gradient updates - the same adjacency as
+    DP-SGD's, so this mechanism's RDP composes additively with the
+    DP-SGD budget (see compose_rdp_budgets).
     """
 
     def __init__(self, max_group_grad_norm: float, noise_multiplier: float):
@@ -483,13 +504,27 @@ class GroupLevelDPMechanism:
                 p.grad = p.grad + g + noise
 
     def get_rdp_epsilon(self, alpha: float) -> float:
-        """Group-level RDP of order alpha accumulated so far."""
+        """Record-level RDP of order alpha accumulated so far.
+
+        Gaussian mechanism with noise std sigma_g*C and substitution
+        sensitivity 2C: effective sigma = sigma_g/2, so each step adds
+        alpha / (2*(sigma_g/2)^2) = 2*alpha/sigma_g^2.
+        """
         if self.steps == 0:
             return 0.0
-        return (alpha / (2.0 * self.noise_multiplier ** 2)) * self.steps
+        return (2.0 * alpha / self.noise_multiplier ** 2) * self.steps
+
+    def get_rdp_curve(self, alphas=None):
+        """Return {alpha: rdp_epsilon} for composition (see
+        compose_rdp_budgets)."""
+        if alphas is None:
+            alphas = [1 + x / 10.0 for x in range(1, 100)] + \
+                list(range(11, 505))
+        return {a: self.get_rdp_epsilon(a) for a in alphas}
 
     def get_privacy_spent(self, delta: float, alphas=None):
-        """Return (epsilon, optimal_alpha) for the group-level guarantee."""
+        """Return (epsilon, optimal_alpha) for the record-level
+        guarantee (substitution adjacency)."""
         if self.steps == 0:
             return 0.0, None
         if alphas is None:
@@ -569,6 +604,72 @@ def dp_release_mean_std(values: torch.Tensor, noise_multiplier: float,
         eps2 = alpha / (2.0 * (noise_multiplier / 2.0) ** 2)
         rdp_orders.append((alpha, eps1 + eps2))
     return mean_released, std_released, rdp_orders
+
+
+def compose_rdp_budgets(budgets, delta, alphas=None):
+    """Compose multiple privacy budgets into one (epsilon, alpha).
+
+    Every mechanism in the pipeline touches the same records, so the
+    true end-to-end guarantee is the composition of ALL of them:
+    DP-SGD (record-level), the fairness-gradient Gaussian mechanism
+    (record-level, substitution adjacency), the statistics releases,
+    and the diffusion stage's DP-SGD.
+
+    Valid RDP composition sums the Renyi divergence at each order
+    alpha and converts to (epsilon, delta) ONCE:
+        eps = min_alpha [ sum_i rdp_i(alpha) + log(1/delta)/(alpha-1) ]
+    Adding per-mechanism epsilons directly is NOT a valid composition
+    rule (each mechanism minimizes over a different alpha).
+
+    Args:
+        budgets: list of either
+            - {alpha: rdp} dicts (from RDPAccountant.get_rdp_curve(),
+              GroupLevelDPMechanism via get_rdp_curve, or
+              dp_release_mean_std's rdp_orders converted with
+              dict(rdp_orders)), or
+            - (alpha, rdp) pair lists (converted internally).
+        delta: target delta for the combined guarantee.
+        alphas: optional alpha grid; defaults to the standard grid.
+
+    Returns:
+        (epsilon, optimal_alpha) of the composed guarantee.
+    """
+    if alphas is None:
+        alphas = [1 + x / 10.0 for x in range(1, 100)] + \
+            list(range(11, 505))
+    # Normalize every budget to {alpha: rdp}
+    curves = []
+    for b in budgets:
+        if not b:
+            continue
+        curves.append(dict(b) if not isinstance(b, dict) else b)
+
+    if not curves:
+        return 0.0, None
+
+    # Union of alphas present in all curves (compose only where every
+    # budget has a value; missing orders are skipped conservatively by
+    # using the intersection)
+    common = set(curves[0].keys())
+    for c in curves[1:]:
+        common &= set(c.keys())
+    if not common:
+        # No overlapping alphas: fall back to each curve's own grid by
+        # interpolating is unsafe - instead evaluate each curve's min
+        # alpha available and compose at the union with 0 for missing
+        # (NOT conservative). Safer: raise.
+        raise ValueError("Budgets have no common alpha orders; "
+                         "use the same alpha grid for all mechanisms.")
+
+    best_eps, best_alpha = float('inf'), None
+    for alpha in sorted(common):
+        if alpha <= 1:
+            continue
+        total_rdp = sum(c[alpha] for c in curves)
+        eps = total_rdp + np.log(1.0 / delta) / (alpha - 1)
+        if eps < best_eps:
+            best_eps, best_alpha = eps, alpha
+    return best_eps, best_alpha
 
 
 class BalancedGroupSampler(Sampler):

@@ -42,7 +42,8 @@ from run_flip_demo import (
 
 from tabsyn.model import MLPDiffusion, Model
 from tabsyn.diffusion_utils import sample as edm_sample
-from tabsyn.vae.flip_fairness import dp_release_mean_std, RDPAccountant
+from tabsyn.vae.flip_fairness import (dp_release_mean_std, RDPAccountant,
+                                      compose_rdp_budgets)
 
 # ==========================================================================
 # DIFFUSION PARAMETERS - Stage 2 knobs
@@ -247,14 +248,20 @@ def decode_latents(vae_model, latents, device, X_num=None, params=None):
 
     if X_num is not None and params is not None:
         Xn = X_num.to(device)
-        r_mean, r_std, _ = dp_release_mean_std(
+        r_mean, r_std, stats_rdp = dp_release_mean_std(
             Xn, params['STATS_NOISE_MULTIPLIER'],
             params['STATS_MAX_NORM'], Xn.shape[0])
         k = params['STATS_RANGE_K']
         lo = (r_mean - k * r_std).cpu().numpy()
         hi = (r_mean + k * r_std).cpu().numpy()
         syn_num = np.clip(syn_num, lo[None, :], hi[None, :])
-    return syn_num, syn_cat
+    # Domain-knowledge clamp: all numeric columns in this dataset (loan
+    # amount, income, LTV, property value, tract population) are
+    # non-negative by definition. Public knowledge, no privacy cost.
+    syn_num = np.clip(syn_num, 0.0, None)
+    if X_num is not None and params is not None:
+        return syn_num, syn_cat, stats_rdp
+    return syn_num, syn_cat, []
 
 
 # ==========================================================================
@@ -330,8 +337,8 @@ def main():
           f'({dparams["SAMPLE_STEPS"]} NFE)...')
     sampled = sample_from_diffusion(diffusion_model, z_mean, n_gen,
                                     latent_shape, dparams, device)
-    syn_num, syn_cat = decode_latents(vae_model, sampled, device,
-                                      X_num=X_num, params=params)
+    syn_num, syn_cat, stats_rdp = decode_latents(vae_model, sampled, device,
+                                                  X_num=X_num, params=params)
 
     # ---- Export ----------------------------------------------------------
     synthetic_df = decode_synthetic_data(syn_num, syn_cat, num_means,
@@ -350,12 +357,27 @@ def main():
     eps = None
     eps_group = None
     eps_diffusion = None
+    eps_total = None
     if accountant is not None:
         eps, alpha = accountant.get_privacy_spent()
     if group_mech is not None and group_mech.steps > 0:
         eps_group, _ = group_mech.get_privacy_spent(params['DP_DELTA'])
     if diff_accountant is not None and diff_accountant.steps > 0:
         eps_diffusion, _ = diff_accountant.get_privacy_spent()
+    # Compose ALL budgets into the true end-to-end guarantee: VAE
+    # DP-SGD + fairness-gradient mechanism + statistics releases +
+    # diffusion DP-SGD. Valid RDP composition sums the divergence at
+    # each alpha and converts once - adding per-mechanism epsilons
+    # (the old 'eps + eps_diffusion' line) is NOT a valid rule.
+    if accountant is not None:
+        budgets = [accountant.get_rdp_curve()]
+        if group_mech is not None and group_mech.steps > 0:
+            budgets.append(group_mech.get_rdp_curve())
+        if diff_accountant is not None and diff_accountant.steps > 0:
+            budgets.append(diff_accountant.get_rdp_curve())
+        if stats_rdp:
+            budgets.append(stats_rdp)
+        eps_total, _ = compose_rdp_budgets(budgets, params['DP_DELTA'])
 
     print('\n' + '=' * 70)
     print('RESULTS (full pipeline: FLIP VAE + latent diffusion)')
@@ -371,18 +393,15 @@ def main():
         print(f'  DP guarantee (record-level, per-sample losses): '
               f'(epsilon={eps:.2f}, delta={params["DP_DELTA"]})')
         if eps_group is not None:
-            print(f'  DP guarantee (group-level, fairness losses):   '
+            print(f'  DP guarantee (fairness-gradient mechanism):     '
                   f'(epsilon={eps_group:.2f}, delta={params["DP_DELTA"]})')
         if eps_diffusion is not None:
             print(f'  DP guarantee (Stage 2 latent diffusion):        '
                   f'(epsilon={eps_diffusion:.2f}, '
                   f'delta={dparams["DP_DELTA"]})')
-            # End-to-end: sequential composition of the record-level
-            # budgets (VAE per-sample losses + diffusion). The group-level
-            # fairness guarantee is reported separately (different
-            # adjacency: group substitution vs record substitution).
-            print(f'  End-to-end record-level epsilon (VAE + diffusion): '
-                  f'{eps + eps_diffusion:.2f}')
+        if eps_total is not None:
+            print(f'  TOTAL end-to-end epsilon (composed):           '
+                  f'(epsilon={eps_total:.2f}, delta={params["DP_DELTA"]})')
     else:
         print(f'  DP guarantee: disabled (USE_DP=False)')
     print(f'\n--- FAIRNESS (origination rate by group) ---')

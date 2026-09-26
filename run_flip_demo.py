@@ -43,6 +43,7 @@ from tabsyn.vae.flip_fairness import (
     RDPAccountant,
     GroupLevelDPMechanism,
     dp_release_mean_std,
+    compose_rdp_budgets,
     register_tabsyn_grad_samplers,
     get_dp_trainable_parameters,
 )
@@ -456,9 +457,14 @@ def generate(model, n_gen, device, params, X_num=None, X_cat=None,
     processing of the private model. They are therefore released through
     the Gaussian mechanism (dp_release_mean_std): each row's latent is
     clipped to STATS_MAX_NORM, the sums are noised at
-    STATS_NOISE_MULTIPLIER, and the release is spent into the privacy
-    budget. Pass the pre-computed release via stats_release=(mean, std)
-    to avoid recomputing it.
+    STATS_NOISE_MULTIPLIER, and the release's RDP is RETURNED so the
+    caller composes it into the total budget (compose_rdp_budgets).
+    Pass the pre-computed release via stats_release=(mean, std) to avoid
+    recomputing it.
+
+    Returns (syn_num, syn_cat, stats_rdp) where stats_rdp is a list of
+    (alpha, rdp) pairs covering BOTH statistics releases (latent mean/std
+    and the range proxy), for composition.
     """
     model.eval()
     # Probe latent shape
@@ -468,6 +474,7 @@ def generate(model, n_gen, device, params, X_num=None, X_cat=None,
     probe = model.forward_with_stages(dummy_num, dummy_cat)
     tokens, d = probe['mu_z'].shape[1], probe['mu_z'].shape[2]
 
+    stats_rdp = []
     if X_num is not None and X_cat is not None:
         if stats_release is not None:
             lat_mean, lat_std = stats_release
@@ -475,9 +482,10 @@ def generate(model, n_gen, device, params, X_num=None, X_cat=None,
             # DP release of the empirical latent statistics
             enc = model.forward_with_stages(X_num.to(device), X_cat.to(device))
             mu_z = enc['mu_z'].reshape(-1, tokens * d)
-            lat_mean, lat_std, _ = dp_release_mean_std(
+            lat_mean, lat_std, rdp1 = dp_release_mean_std(
                 mu_z, params['STATS_NOISE_MULTIPLIER'],
                 params['STATS_MAX_NORM'], mu_z.shape[0])
+            stats_rdp.extend(rdp1)
             lat_mean = lat_mean.reshape(1, tokens, d)
             lat_std = lat_std.reshape(1, tokens, d)
         mu = lat_mean + lat_std * torch.randn(
@@ -503,14 +511,23 @@ def generate(model, n_gen, device, params, X_num=None, X_cat=None,
     # that. k = STATS_RANGE_K (default 4) covers ~all of a Gaussian's mass.
     if X_num is not None:
         Xn = X_num.to(device)
-        r_mean, r_std, _ = dp_release_mean_std(
+        r_mean, r_std, rdp2 = dp_release_mean_std(
             Xn, params['STATS_NOISE_MULTIPLIER'],
             params['STATS_MAX_NORM'], Xn.shape[0])
+        stats_rdp.extend(rdp2)
         k = params['STATS_RANGE_K']
         lo = (r_mean - k * r_std).cpu().numpy()
         hi = (r_mean + k * r_std).cpu().numpy()
         syn_num = np.clip(syn_num, lo[None, :], hi[None, :])
-    return syn_num, syn_cat
+
+    # Domain-knowledge clamp: loan amounts, incomes, property values
+    # and LTV ratios are non-negative by definition. The mean +/- k*std
+    # proxy above can still dip below zero for skewed columns (the
+    # committed report showed an income of -31.15); clamping at 0 uses
+    # only PUBLIC knowledge about the domain, so it costs no privacy.
+    syn_num = np.clip(syn_num, 0.0, None)
+
+    return syn_num, syn_cat, stats_rdp
 
 
 # ==========================================================================
@@ -583,11 +600,21 @@ def fairness_metrics(real_cat, syn_cat, t_idx, s_idx, cat_encoders,
     """
     def dp(cat):
         rates = {}
+        # Look up the factorize CODE for the label '1' (= originated)
+        # instead of assuming code 1: pd.factorize assigns codes in
+        # first-appearance order, so '0'->0/'1'->1 only if '0' appears
+        # first in the data. Hardcoding == 1 silently measures the
+        # DENIAL rate when the ordering flips, reversing every group
+        # comparison in the report.
+        try:
+            t_pos = list(cat_encoders[TARGET_COL]).index('1')
+        except ValueError:
+            t_pos = 1  # fallback: assume binary 0/1 encoding
         for g in range(len(cat_encoders[SENSITIVE_COL])):
             m = cat[:, s_idx] == g
             if m.sum() == 0:
                 continue
-            rates[g] = float((cat[m, t_idx] == 1).mean())
+            rates[g] = float((cat[m, t_idx] == t_pos).mean())
         vals = list(rates.values())
         return rates, max(vals) - min(vals), min(vals) / (max(vals) + 1e-8)
 
@@ -693,14 +720,22 @@ def _downstream_fairness(real_num, real_cat, syn_num, syn_cat, t_idx,
     X_real = feats(real_cat, real_num)
     y_real = real_cat[:, t_idx]
 
-    # Ridge classifier (dependency-free, same _fast_auc machinery)
+    # Ridge classifier (dependency-free, same _fast_auc machinery).
+    # Map the target to +/-1 by the CODE for label '1' (not a hardcoded
+    # 1 - see the t_pos note in fairness_metrics), fit, and threshold
+    # the score at 0.
+    try:
+        t_pos = list(cat_encoders[TARGET_COL]).index('1')
+    except ValueError:
+        t_pos = 1
+    y_pm = np.where(y_syn == t_pos, 1.0, -1.0)
     Xc = X_syn - X_syn.mean(axis=0, keepdims=True)
     d = Xc.shape[1]
     lam = 1e-2 * len(Xc)
-    w = np.linalg.solve(Xc.T @ Xc + lam * np.eye(d), Xc.T @ y_syn)
-    b = y_syn.mean() - X_syn.mean(axis=0) @ w
+    w = np.linalg.solve(Xc.T @ Xc + lam * np.eye(d), Xc.T @ y_pm)
+    b = y_pm.mean() - X_syn.mean(axis=0) @ w
     scores = X_real @ w + b
-    pred = (scores > 0.5).astype(int)
+    pred = (scores > 0).astype(int)
 
     rates = {}
     for g in range(len(cat_encoders[SENSITIVE_COL])):
@@ -1006,8 +1041,8 @@ def main():
                                                s_idx, params, device)
 
     print('\nGenerating synthetic data...')
-    syn_num, syn_cat = generate(model, len(X_num), device, params,
-                                X_num=X_num, X_cat=X_cat)
+    syn_num, syn_cat, stats_rdp = generate(model, len(X_num), device, params,
+                                           X_num=X_num, X_cat=X_cat)
     synthetic_df = save_synthetic_data(syn_num, syn_cat, num_means, num_stds, encoders)
 
     fid = fidelity_metrics(X_num.numpy(), syn_num, X_cat.numpy(), syn_cat,
@@ -1018,10 +1053,23 @@ def main():
 
     eps = None
     eps_group = None
+    eps_total = None
     if accountant is not None:
         eps, alpha = accountant.get_privacy_spent()
     if group_mech is not None and group_mech.steps > 0:
         eps_group, _ = group_mech.get_privacy_spent(params['DP_DELTA'])
+    # Compose ALL budgets into the true end-to-end guarantee: DP-SGD
+    # (record-level) + fairness-gradient mechanism (record-level,
+    # substitution adjacency) + the statistics releases. Valid RDP
+    # composition sums the divergence at each alpha and converts once -
+    # adding per-mechanism epsilons is NOT a valid rule.
+    if accountant is not None:
+        budgets = [accountant.get_rdp_curve()]
+        if group_mech is not None and group_mech.steps > 0:
+            budgets.append(group_mech.get_rdp_curve())
+        if stats_rdp:
+            budgets.append(stats_rdp)
+        eps_total, _ = compose_rdp_budgets(budgets, params['DP_DELTA'])
 
     print('\n' + '=' * 70)
     print('RESULTS')
@@ -1037,8 +1085,11 @@ def main():
         print(f'  DP guarantee (record-level, per-sample losses): '
               f'(epsilon={eps:.2f}, delta={params["DP_DELTA"]})')
         if eps_group is not None:
-            print(f'  DP guarantee (group-level, fairness losses):   '
+            print(f'  DP guarantee (fairness-gradient mechanism):     '
                   f'(epsilon={eps_group:.2f}, delta={params["DP_DELTA"]})')
+        if eps_total is not None:
+            print(f'  TOTAL end-to-end epsilon (composed):           '
+                  f'(epsilon={eps_total:.2f}, delta={params["DP_DELTA"]})')
     else:
         print(f'  DP guarantee: disabled (USE_DP=False)')
     print(f'\n--- FAIRNESS (origination rate by group) ---')

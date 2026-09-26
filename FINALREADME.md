@@ -822,27 +822,45 @@ each method *should* do by construction.
 
 These are the honest boundaries of what the implementation supports.
 
-1. **The fairness losses are covered by a GROUP-level guarantee, not a
-   record-level one.** DP-SGD's record-level guarantee requires each
-   record's gradient to be clipped *in isolation*. The FLIP fairness
-   terms — CKAᵀ between groups and the sliced-Wasserstein anchor — are
-   *batch-level* functionals: one record changes the gradient
-   attributed to every other record in its batch, so per-sample
-   clipping cannot bound any individual's influence for these terms.
-   The implementation therefore **splits the guarantee**:
+1. **The fairness losses are covered by a separate record-level Gaussian
+   mechanism, and all budgets are COMPOSED into one total.** DP-SGD's
+   guarantee requires each record's gradient to be clipped *in
+   isolation*. The FLIP fairness terms — CKAᵀ between groups and the
+   sliced-Wasserstein anchor — are *batch-level* functionals: one record
+   changes the gradient attributed to every other record in its batch,
+   so per-sample clipping cannot bound any individual's influence for
+   these terms. The implementation therefore **splits the guarantee**:
    - The per-sample-decomposable loss (MSE + CE + KLD + L_S, with L_S
-     in its per-sample form) goes through Opacus DP-SGD and carries the
-     **record-level** (ε, δ) guarantee.
-   - The batch-coupled fairness terms' gradient is captured separately
-     (with Opacus's hooks disabled), clipped to a fixed norm
-     (`MAX_GROUP_GRAD_NORM`, bounding sensitivity to any one protected
-     group), noised at `GROUP_NOISE_MULTIPLIER`, and added to the
-     aggregate — a **group-level** Gaussian mechanism, accounted and
-     reported as a separate ε_group.
-   Two ε values are reported for every DP run. Record-level DP for the
-   fairness terms is *not* claimed; group-level DP (neighboring
-   datasets differing in one group's records are indistinguishable) is
-   what these terms carry.
+     in its per-sample form) goes through Opacus DP-SGD.
+   - The batch-coupled fairness gradient is captured separately (with
+     Opacus's hooks disabled), the **entire vector** is clipped to
+     `MAX_GROUP_GRAD_NORM` C, and Gaussian noise σ_g·C is added.
+     Because the whole vector is clipped, the mechanism's output
+     depends on the data only through a norm-≤C vector: under
+     substitution adjacency the sensitivity is **2C**, so each step's
+     RDP is 2α/σ_g² (an earlier version used α/(2σ_g²), assuming
+     sensitivity C and under-accounting by 4×). This makes the
+     fairness-gradient mechanism **record-level DP under the same
+     adjacency as DP-SGD**, so its RDP composes additively with the
+     DP-SGD budget.
+
+   **Composition:** every mechanism touches the same records, so the
+   true end-to-end guarantee is the composition of ALL budgets — VAE
+   DP-SGD, the fairness-gradient mechanism, the statistics releases,
+   and (in the full pipeline) the diffusion stage's DP-SGD. Valid RDP
+   composition **sums the Renyi divergence at each order α and converts
+   to (ε, δ) once** (`compose_rdp_budgets`); adding per-mechanism
+   epsilons is not a valid rule (each minimizes over a different α).
+   Every run reports the component ε values and the composed TOTAL.
+
+   **Honest magnitudes:** at the demo's settings the composed total is
+   large (tens to ~100, depending on the minority-group size and epoch
+   count) — a true statement about the mechanism, but not a strong
+   guarantee. The dominant cause is the balanced sampler's high
+   per-step inclusion rate for the minority group (q ≈ 0.1–0.34).
+   Reaching single-digit ε requires substantially higher noise, far
+   fewer epochs, or a smaller per-group batch — each at a fidelity
+   cost. The knob panel supports all three.
 
 2. **Generation-time statistics are DP-released, not raw.** The
    empirical latent mean/std used for sampling, and the numeric
@@ -883,6 +901,33 @@ These are the honest boundaries of what the implementation supports.
    `BatchMemoryManager` can split physical batches into virtual ones,
    and `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` helps with
    fragmentation.
+
+7. **Preprocessing statistics are not DP-released.** `load_sample`
+   standardizes numerics with the raw column mean/std, median-imputes
+   missing values, and derives the category sets from `pd.factorize` —
+   all fresh computations on raw records, none accounted into the
+   budget. Each is a single low-sensitivity statistic over 12k+ rows,
+   so the practical leak is small, but formally the guarantee is
+   conditional on these being public/non-sensitive. A rigorous fix
+   would release them through the same `dp_release_mean_std`
+   machinery and compose them into the total. Similarly, the diffusion
+   stage's latent-mean shift is computed on the encoded training data —
+   a new statistic of the raw data through a private channel, needing
+   its own release or explicit accounting.
+
+8. **The balanced sampler is shuffle-based, not Poisson.** Opacus's
+   subsampled-Gaussian bound formally assumes Poisson sampling at rate
+   q; using γ_max (the minority group's rate) is a conservative
+   approximation, not exact. A per-group Poisson sampler would make the
+   accounting tight.
+
+9. **Committed reports predate the fixes.** `flip_full_report.html`
+   and the demo report were generated before the accounting and
+   fairness-direction fixes: they still show ε = 0.52 (an artifact of
+   the broken accountant), a DCR ratio of 0.67 (< 1.0), a correlation
+   delta of 0.18 ("Poor"), and reversed group rates. Rerun both
+   pipelines to regenerate them; the README's "good result" numbers
+   should be re-derived from the new outputs.
 
 3. **CKAᵀ = 1 does not mean independence.** CKAᵀ is invariant to group
    mean shifts and overall scale, so a latent that encodes the protected
