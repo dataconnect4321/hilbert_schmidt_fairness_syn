@@ -303,14 +303,18 @@ def train_flip(X_num, X_cat, categories, s_idx, params, device):
             noise_multiplier=params['NOISE_MULTIPLIER'],
             sample_rate=gamma_max,
             delta=params['DP_DELTA'])
-        # Group-level mechanism for the batch-coupled fairness terms
+        # Gaussian mechanism for the batch-coupled fairness terms
         # (SWD anchor + CKA^T): their gradients cannot be decomposed per
         # sample, so record-level DP-SGD does not cover them. Clipping
-        # bounds the sensitivity to any one protected group; the noise
-        # gives a group-level guarantee accounted separately below.
+        # bounds the sensitivity (2C under substitution); the noise
+        # gives a record-level guarantee. Under the Poisson sampler the
+        # subsampling amplification applies to this mechanism too, so
+        # gamma_max is passed for the amplified accounting (the largest
+        # remaining win: the fairness term drops several-fold).
         group_mech = GroupLevelDPMechanism(
             max_group_grad_norm=params['MAX_GROUP_GRAD_NORM'],
-            noise_multiplier=params['GROUP_NOISE_MULTIPLIER'])
+            noise_multiplier=params['GROUP_NOISE_MULTIPLIER'],
+            sample_rate=gamma_max if params.get('SAMPLER', 'poisson') == 'poisson' else None)
     else:
         optimizer = torch.optim.Adam(model.parameters(), lr=params['LR'],
                                      eps=params['ADAM_EPS'],

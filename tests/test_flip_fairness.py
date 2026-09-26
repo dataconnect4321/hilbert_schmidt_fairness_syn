@@ -422,6 +422,35 @@ def test_group_mech_rdp_curve_matches():
         assert abs(rdp - mech.get_rdp_epsilon(alpha)) < 1e-12
 
 
+def test_group_mech_subsampled_credit_smaller():
+    """With a Poisson sample_rate, the subsampled-Gaussian bound must
+    give a SMALLER epsilon than the unamplified 2*alpha/sigma^2 bound -
+    this was the largest remaining win in the composed total."""
+    m_plain = GroupLevelDPMechanism(0.5, noise_multiplier=3.0)
+    m_pois = GroupLevelDPMechanism(0.5, noise_multiplier=3.0,
+                                   sample_rate=0.17)
+    for _ in range(360):
+        m_plain.add_noised([], {})
+        m_pois.add_noised([], {})
+    e_plain, _ = m_plain.get_privacy_spent(1e-5)
+    e_pois, _ = m_pois.get_privacy_spent(1e-5)
+    assert e_pois < e_plain
+    # Magnitude check: unamplified ~141 at these settings; subsampled
+    # should drop several-fold (reviewer computed ~15 at m=2000).
+    assert e_pois < e_plain / 3
+
+
+def test_group_mech_subsampled_curve_consistent():
+    """The subsampled curve (via compute_rdp at sigma_g/2) must be
+    internally consistent: curve entries match per-alpha computation."""
+    m = GroupLevelDPMechanism(0.5, noise_multiplier=3.0, sample_rate=0.1)
+    for _ in range(50):
+        m.add_noised([], {})
+    curve = m.get_rdp_curve()
+    for alpha in [2.0, 10.0, 50.0]:
+        assert abs(curve[alpha] - m.get_rdp_epsilon(alpha)) < 1e-9
+
+
 # --------------------------------------------------------------------------
 # compose_rdp_budgets
 # --------------------------------------------------------------------------

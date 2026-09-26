@@ -853,16 +853,23 @@ These are the honest boundaries of what the implementation supports.
    epsilons is not a valid rule (each minimizes over a different α).
    Every run reports the component ε values and the composed TOTAL.
 
+   **Subsampling amplification for the fairness mechanism:** when
+   batches are drawn by Poisson sampling (the default sampler), the
+   amplification theorem applies to the clipped-and-noised fairness
+   gradient too — it is accounted with Opacus's subsampled-Gaussian
+   bound at effective noise multiplier σ_g/2 (noise std σ_g·C over
+   substitution sensitivity 2C). This was the single largest remaining
+   win: at the demo settings the fairness term drops from ε ≈ 141
+   (unamplified) to ε ≈ 10–34 depending on the minority-group size.
+
    **Honest magnitudes:** at the demo's settings the composed total is
-   in the hundreds (roughly 200–1000 depending on the minority-group
-   size, sampler, and epoch count) — a true statement about the
-   mechanism, but not a strong guarantee. The dominant causes are the
-   high per-step inclusion rate for the minority group (q ≈ 0.1–0.34)
-   and the fairness-gradient mechanism's per-step cost (2α/σ_g² with
-   no subsampling credit). Reaching single-digit ε requires
-   substantially higher noise, far fewer epochs, a smaller per-group
-   batch, or a larger σ_g — each at a fidelity cost. The knob panel
-   supports all of them.
+   in the low hundreds (roughly 100–300 depending on the minority-group
+   size and epoch count) — a true statement about the mechanism, but
+   not a strong guarantee. The dominant remaining cost is the DP-SGD
+   term at the minority group's high inclusion rate (q ≈ 0.1–0.34).
+   Reaching single-digit ε requires substantially higher noise, far
+   fewer epochs, or a smaller per-group batch — each at a fidelity
+   cost. The knob panel supports all of them.
 
 2. **Generation-time statistics are DP-released, not raw.** The
    empirical latent mean/std used for sampling, and the numeric
@@ -918,16 +925,21 @@ These are the honest boundaries of what the implementation supports.
    a new statistic of the raw data through a private channel, needing
    its own release or explicit accounting.
 
-4. **Sampler and accounting.** The default sampler is now per-group
-   **Poisson** (`PoissonGroupSampler`): each record is included
-   independently per step with per-group probability q_g, making the
-   Poisson sampling assumption of Opacus's subsampled-Gaussian bound
-   exactly true (the accountant uses γ_max = max q_g). The earlier
+4. **Sampler and accounting.** All training paths now default to
+   per-group **Poisson** sampling: the demo and the CLI use
+   `PoissonSampler`/`PoissonGroupSampler` (each record included
+   independently per step with per-group probability q_g; the
+   accountant uses γ_max = max q_g), and the full pipeline's diffusion
+   stage uses Opacus's `DPDataLoader` (Poisson at batch/N). This makes
+   the Poisson sampling assumption of the subsampled-Gaussian bound
+   exactly true everywhere, and entitles the fairness-gradient
+   mechanism to subsampling amplification (see item 1). The earlier
    shuffle-based `BalancedGroupSampler` (still available via
-   `SAMPLER='balanced'`) violates that assumption — Chua et al. (ICML
-   2024, arXiv:2403.17673) showed shuffle-based DP-SGD can leak more
-   than Poisson accounting reports — so under it the accounting is
-   NOT formally covered, only an approximation.
+   `SAMPLER='balanced'` / `--sampler balanced`) violates that
+   assumption — Chua et al. (ICML 2024, arXiv:2403.17673) showed
+   shuffle-based DP-SGD can leak more than Poisson accounting reports
+   — so under it the accounting is NOT formally covered, and the
+   fairness mechanism gets no amplification credit.
 
 5. **Committed reports predate the fixes.** `flip_full_report.html`
    and the demo report were generated before the accounting and

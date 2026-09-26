@@ -471,15 +471,29 @@ class GroupLevelDPMechanism:
     (NOT alpha/(2*sigma_g^2) - that assumed sensitivity C and
     under-accounted by 4x).
 
-    GUARANTEE: record-level (epsilon, delta)-DP under substitution
-    adjacency for the fairness-gradient updates - the same adjacency as
-    DP-SGD's, so this mechanism's RDP composes additively with the
-    DP-SGD budget (see compose_rdp_budgets).
+    GUARANTEE: record-level (epsilon, delta)-DP for the fairness-gradient
+    updates, under either substitution or add/remove adjacency (the 2C
+    bound holds for both), so this mechanism's RDP composes additively
+    with the DP-SGD budget (see compose_rdp_budgets).
+
+    SUBSAMPLING AMPLIFICATION: when the batch is drawn by Poisson
+    sampling at rate q (PoissonGroupSampler), the amplification theorem
+    applies to ANY mechanism run on the sampled batch - including this
+    clipped-and-noised gradient release. Pass sample_rate=q (gamma_max,
+    the largest per-record inclusion probability across groups) and
+    the per-step RDP is accounted with Opacus's subsampled-Gaussian
+    bound at effective noise multiplier sigma_g/2 (noise std sigma_g*C
+    over substitution sensitivity 2C). Without a sample rate (or with
+    sample_rate=None), the unamplified 2*alpha/sigma_g^2 per step is
+    used - valid but far looser (the fairness term was the largest
+    part of the composed total before this credit was added).
     """
 
-    def __init__(self, max_group_grad_norm: float, noise_multiplier: float):
+    def __init__(self, max_group_grad_norm: float, noise_multiplier: float,
+                 sample_rate: float = None):
         self.max_group_grad_norm = float(max_group_grad_norm)
         self.noise_multiplier = float(noise_multiplier)
+        self.sample_rate = sample_rate  # q for Poisson amplification
         self.steps = 0
 
     def add_noised(self, params, grads):
@@ -518,18 +532,44 @@ class GroupLevelDPMechanism:
 
         Gaussian mechanism with noise std sigma_g*C and substitution
         sensitivity 2C: effective sigma = sigma_g/2, so each step adds
-        alpha / (2*(sigma_g/2)^2) = 2*alpha/sigma_g^2.
+        alpha / (2*(sigma_g/2)^2) = 2*alpha/sigma_g^2. With Poisson
+        sampling at rate q, the subsampled-Gaussian bound applies at
+        effective noise multiplier sigma_g/2 (see class docstring).
         """
         if self.steps == 0:
             return 0.0
+        if self.sample_rate is not None and self.sample_rate > 0:
+            # Subsampled bound at ONE step (compute_rdp composes over
+            # steps internally, so call it with steps=1 and multiply).
+            try:
+                from opacus.accountants.analysis.rdp import compute_rdp
+                one = compute_rdp(q=self.sample_rate,
+                                  noise_multiplier=self.noise_multiplier / 2.0,
+                                  steps=1, orders=[alpha])
+                return float(one[0]) * self.steps
+            except ImportError:
+                pass
         return (2.0 * alpha / self.noise_multiplier ** 2) * self.steps
 
     def get_rdp_curve(self, alphas=None):
         """Return {alpha: rdp_epsilon} for composition (see
-        compose_rdp_budgets)."""
+        compose_rdp_budgets). Uses the subsampled-Gaussian bound when a
+        sample_rate is set (Poisson sampling), else the unamplified
+        bound."""
         if alphas is None:
             alphas = [1 + x / 10.0 for x in range(1, 100)] + \
                 list(range(11, 505))
+        if self.steps == 0:
+            return {a: 0.0 for a in alphas}
+        if self.sample_rate is not None and self.sample_rate > 0:
+            try:
+                from opacus.accountants.analysis.rdp import compute_rdp
+                curve = compute_rdp(q=self.sample_rate,
+                                    noise_multiplier=self.noise_multiplier / 2.0,
+                                    steps=self.steps, orders=alphas)
+                return {a: float(e) for a, e in zip(alphas, curve)}
+            except ImportError:
+                pass
         return {a: self.get_rdp_epsilon(a) for a in alphas}
 
     def get_privacy_spent(self, delta: float, alphas=None):

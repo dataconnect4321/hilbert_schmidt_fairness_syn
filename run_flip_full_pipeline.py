@@ -162,8 +162,9 @@ def train_diffusion(latents, params, device):
             noise_multiplier=params['NOISE_MULTIPLIER'],
             max_grad_norm=params['MAX_GRAD_NORM'],
             expected_batch_size=params['BATCH_SIZE'])
-        # Plain shuffled batches: each sample appears exactly once per
-        # epoch, so its per-step inclusion probability is batch/n.
+        # Poisson sampling via DPDataLoader: each record included
+        # independently per step at rate batch/N - matches the
+        # accountant's sample_rate exactly.
         accountant = RDPAccountant(
             noise_multiplier=params['NOISE_MULTIPLIER'],
             sample_rate=params['BATCH_SIZE'] / z_norm.shape[0],
@@ -178,9 +179,21 @@ def train_diffusion(latents, params, device):
         optimizer, mode='min', factor=0.9, patience=20)
 
     dataset = torch.utils.data.TensorDataset(z_norm)
-    loader = torch.utils.data.DataLoader(
-        dataset, batch_size=params['BATCH_SIZE'], shuffle=True,
-        num_workers=0, drop_last=False)
+    if params.get('USE_DP'):
+        # DPDataLoader performs true Poisson sampling (each record
+        # included independently per step at rate batch/N), which is
+        # exactly what the subsampled-Gaussian accounting assumes. A
+        # plain shuffle=True loader violates that assumption - the same
+        # issue Chua et al. (ICML 2024) raise for DP-SGD generally.
+        from opacus.data_loader import DPDataLoader
+        loader = DPDataLoader.from_data_loader(
+            torch.utils.data.DataLoader(
+                dataset, batch_size=params['BATCH_SIZE'],
+                num_workers=0, drop_last=False))
+    else:
+        loader = torch.utils.data.DataLoader(
+            dataset, batch_size=params['BATCH_SIZE'], shuffle=True,
+            num_workers=0, drop_last=False)
 
     model.train()
     for epoch in range(params['EPOCHS']):

@@ -20,6 +20,7 @@ from tabsyn.vae.flip_fairness import (
     uniform_attribute_loss,
     uniform_attribute_loss_per_sample,
     BalancedGroupSampler,
+    PoissonGroupSampler,
     RDPAccountant,
     GroupLevelDPMechanism,
     compose_rdp_budgets,
@@ -133,22 +134,46 @@ def main(args):
 
     batch_size = 4096
     if s_groups is not None:
-        # FLIP balanced mini-batch sampling (Sec. 4.2.1): equal group
-        # representation per batch.
-        sampler = BalancedGroupSampler(s_groups.numpy(), batch_size)
-        train_loader = DataLoader(
-            train_data,
-            batch_sampler = sampler,
-            num_workers = 4,
-        )
-        print(f'Balanced sampling: {sampler.num_batches} batches/epoch, '
-              f'{sampler.per_group} per group x {sampler.n_groups} groups')
+        # FLIP mini-batch sampling (Sec. 4.2.1): equal EXPECTED group
+        # representation per batch. Poisson sampling (default) makes each
+        # record's inclusion independent per step - exactly what
+        # Opacus's subsampled-Gaussian accounting assumes (the shuffle-
+        # based BalancedGroupSampler violates it; Chua et al. ICML 2024
+        # showed shuffle-based DP-SGD can leak more than Poisson
+        # accounting reports). --sampler balanced selects the old
+        # shuffle-based sampler.
+        groups_np = s_groups.numpy()
+        per_group = batch_size // len(np.unique(groups_np))
+        m = int(np.bincount(groups_np).min())
+        if args.sampler == 'poisson':
+            steps_per_epoch = int(np.ceil(m / per_group))
+            sampler = PoissonGroupSampler(groups_np, per_group,
+                                           steps_per_epoch)
+            train_loader = DataLoader(
+                train_data,
+                batch_sampler=sampler,
+                num_workers=4,
+            )
+            print(f'Poisson sampling: {steps_per_epoch} steps/epoch, '
+                  f'~{per_group} per group x {sampler.n_groups} groups, '
+                  f'gamma_max={sampler.gamma_max:.4f}')
+        else:
+            sampler = BalancedGroupSampler(groups_np, batch_size)
+            train_loader = DataLoader(
+                train_data,
+                batch_sampler=sampler,
+                num_workers=4,
+            )
+            print(f'Balanced sampling: {sampler.num_batches} batches/epoch, '
+                  f'{sampler.per_group} per group x {sampler.n_groups} '
+                  f'groups (accounting NOT formally valid - see Chua et '
+                  f'al. ICML 2024)')
     else:
         train_loader = DataLoader(
             train_data,
-            batch_size = batch_size,
-            shuffle = True,
-            num_workers = 4,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=4,
         )
 
     model = Model_VAE(NUM_LAYERS, d_numerical, categories, D_TOKEN, n_head = N_HEAD, factor = FACTOR, bias = True)
@@ -199,31 +224,34 @@ def main(args):
             max_grad_norm=args.max_grad_norm,
             expected_batch_size=batch_size,
         )
-        # RDP accountant: use the MINORITY GROUP's per-step inclusion
-        # probability (gamma_max, Prop. 1 / Eq. 13 of the paper), NOT
-        # batch/N. The balanced sampler shows every minority sample
-        # exactly once per epoch, so its inclusion probability is
-        # per_group_batch / m_minority - LARGER than batch/N, which
-        # would understate epsilon for exactly the group the fairness
-        # intervention targets.
-        groups_np = s_groups.numpy()
-        m_minority = int(np.bincount(groups_np).min())
-        per_group = batch_size // len(np.unique(groups_np))
+        # RDP accountant: gamma_max, the largest per-record inclusion
+        # probability across groups (the minority group's). Under the
+        # Poisson sampler this is exact; under the balanced sampler it
+        # is the per-step rate (every minority sample once per epoch) -
+        # larger than batch/N, which would understate epsilon for
+        # exactly the group the fairness intervention targets.
+        if isinstance(sampler, PoissonGroupSampler):
+            gamma_max = sampler.gamma_max
+        else:
+            gamma_max = per_group / m
         accountant = RDPAccountant(
             noise_multiplier=args.noise_multiplier,
-            sample_rate=per_group / m_minority,
+            sample_rate=gamma_max,
             delta=args.dp_delta,
         )
         # Gaussian mechanism for the batch-coupled fairness gradient
-        # (record-level DP under substitution adjacency; composes with
-        # the DP-SGD budget - see flip_fairness.compose_rdp_budgets).
+        # (record-level DP; composes with the DP-SGD budget - see
+        # flip_fairness.compose_rdp_budgets). Under Poisson sampling the
+        # subsampling amplification applies to this mechanism too, so
+        # gamma_max is passed for the amplified accounting.
         group_mech = GroupLevelDPMechanism(
             max_group_grad_norm=args.max_group_grad_norm,
             noise_multiplier=args.group_noise_multiplier,
+            sample_rate=gamma_max if args.sampler == 'poisson' else None,
         )
         print(f'DP-SGD enabled: noise_multiplier={args.noise_multiplier}, '
               f'max_grad_norm={args.max_grad_norm}, delta={args.dp_delta}, '
-              f'sample_rate(gamma_max)={per_group / m_minority:.4f}')
+              f'sample_rate(gamma_max)={gamma_max:.4f}')
     else:
         optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WD)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.95, patience=10, verbose=True)
@@ -483,6 +511,12 @@ if __name__ == '__main__':
     parser.add_argument('--max_group_grad_norm', type=float, default=0.5,
                         help='L2 clip norm for the whole fairness-gradient '
                              'vector (substitution sensitivity 2C).')
+    parser.add_argument('--sampler', type=str, default='poisson',
+                        choices=['poisson', 'balanced'],
+                        help='Batch sampler: poisson (default; makes Opacus '
+                             'accounting exact) or balanced (shuffle-based; '
+                             'accounting NOT formally valid - Chua et al. '
+                             'ICML 2024).')
 
     args = parser.parse_args()
 
