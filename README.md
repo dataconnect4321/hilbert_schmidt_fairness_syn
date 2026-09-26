@@ -1,5 +1,14 @@
 # FLIP: Fair + Private TabSyn VAE
 
+> **[2026-09-26 update]** This file describes the original FLIP
+> integration. The design has since been substantially corrected —
+> split record-level DP for the fairness losses, proper RDP budget
+> composition, DP-released generation statistics, DP-SGD for the
+> diffusion stage, and a fairness-metric encoding fix. **See
+> `FINALREADME.md` (especially Part 9, "Limitations of the Guarantees")
+> for the current, authoritative documentation.** The summary below
+> is kept for historical context.
+
 This document covers the changes made to adapt TabSyn's VAE training to the
 method in *"Achieving Hilbert-Schmidt Independence Under Rényi Differential
 Privacy for Fair and Private Data Generation"* (arXiv:2508.21815, the
@@ -72,18 +81,28 @@ The math from the paper, implemented as standalone, testable functions:
 - DP-SGD is wired in behind `--dp`: the model is wrapped in Opacus's
   `GradSampleModule`, the optimizer becomes a `DPOptimizer` (per-sample
   gradient clipping + Gaussian noise), and an `RDPAccountant` reports the
-  spent (ε, δ) every epoch.
+  spent (ε, δ) every epoch. **[Updated]** The loss is now split into two
+  passes: the per-sample-decomposable terms go through Opacus DP-SGD,
+  while the batch-coupled fairness gradient (SWD + CKAᵀ) goes through a
+  separate Gaussian mechanism (`GroupLevelDPMechanism`) — whole-vector
+  clipping, substitution sensitivity 2C — so the fairness terms carry a
+  record-level guarantee that composes with the DP-SGD budget. The
+  accountant uses the minority group's sampling rate (γ_max), not
+  batch/N. See `FINALREADME.md` Part 9.
 - New CLI flags: `--sensitive_idx`, `--phase1_epochs`, `--lambda_fair`,
-  `--dp`, `--noise_multiplier`, `--max_grad_norm`, `--dp_delta`.
+  `--dp`, `--noise_multiplier`, `--max_grad_norm`, `--dp_delta`,
+  `--group_noise_multiplier`, `--max_group_grad_norm`.
 
 ### `tests/test_flip_fairness.py` (new file)
 
-30 unit tests covering every function above in isolation (CKAᵀ identity/
-symmetry/boundedness, disentanglement sign and gradient flow, SWD
-identity/shift sensitivity, `L_S` at uniform/skewed logits, sampler group
-balance and epoch length, RDP accountant monotonicity, the multi-stage
-forward pass, and two end-to-end smoke tests — one plain, one under
-DP-SGD). Run with:
+61 unit tests covering every function above in isolation (CKAᵀ identity/
+symmetry/boundedness and its covariance-cosine form, disentanglement sign
+and gradient flow, SWD identity/shift sensitivity, `L_S` at uniform/skewed
+logits plus its per-sample variant, sampler group balance and epoch
+length, RDP accountant monotonicity and plausible magnitudes, the
+multi-stage forward pass, the group-level mechanism's 2C sensitivity,
+RDP budget composition, DP statistics releases, and end-to-end smoke
+tests — plain and under DP-SGD). Run with:
 
 ```powershell
 c:/Users/db234/OneDrive/Documents/Vector/.venv/Scripts/python.exe tests/test_flip_fairness.py

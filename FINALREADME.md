@@ -879,16 +879,17 @@ These are the honest boundaries of what the implementation supports.
    pipeline's diffusion prior is trained with DP-SGD (Opacus
    `GradSampleModule` + `DPOptimizer`) and its own RDP accountant. Two
    properties make this stage cleanly record-level private, with no
-   group-level mechanism needed: the EDM loss is per-sample decomposable
+   separate mechanism needed: the EDM loss is per-sample decomposable
    (each row draws its own σ and noise; the loss is a per-row squared
    error), and `MLPDiffusion` is standard Linear+SiLU with no BatchNorm,
    so Opacus's per-sample clipping covers every parameter. Because the
    latents it trains on are outputs of the DP-trained VAE encoder
    (post-processing of a private model), Stage 2's budget composes with
-   Stage 1's into an **end-to-end record-level guarantee** reported as
-   ε_VAE + ε_diffusion. The group-level fairness guarantee (item 1) is
-   reported separately (different adjacency: group substitution vs
-   record substitution).
+   Stage 1's into the end-to-end record-level guarantee — via
+   `compose_rdp_budgets` (sum RDP at each α, convert once), NOT by
+   adding per-mechanism ε values, which is not a valid rule. The full
+   pipeline reports the composed TOTAL across VAE DP-SGD + fairness
+   mechanism + statistics releases + diffusion DP-SGD.
 
    **Tuning note:** DP-SGD's memory scales as `batch_size × n_params ×
    4 bytes` because Opacus stores a per-sample gradient copy of every
@@ -928,6 +929,28 @@ These are the honest boundaries of what the implementation supports.
    delta of 0.18 ("Poor"), and reversed group rates. Rerun both
    pipelines to regenerate them; the README's "good result" numbers
    should be re-derived from the new outputs.
+
+10. **The fairness metric's target code was hardcoded (fixed).** An
+   earlier version of `fairness_metrics` tested `cat[:, t_idx] == 1`,
+   but that `1` is a code from `pd.factorize`, not the label `"1"`.
+   When the factorize ordering flipped, the metric silently measured
+   the DENIAL rate instead of the origination rate — every group
+   comparison in the report read backwards (the committed report
+   showed White 0.39 / Black 0.56, i.e. the complement of the true
+   origination rates 0.61 / 0.43). The fix looks up the code with
+   `list(cat_encoders[TARGET_COL]).index('1')`; the downstream-fairness
+   probe got the same treatment (±1 encoding, threshold at 0).
+
+11. **Synthetic numerics are clamped at 0 (domain knowledge).** The
+   DP range proxy (mean ± k·std) can still dip below zero for skewed
+   columns — the committed report showed an income of −31.15. Both
+   `generate()` and the full pipeline's `decode_latents()` now apply a
+   final `np.clip(syn_num, 0, None)`: loan amounts, incomes, property
+   values and LTV ratios are non-negative by definition, so this uses
+   only public knowledge about the domain and costs no privacy. This
+   closes the loop on Part 6's negative-loan-amounts bug: the range
+   clip keeps values near the data's support, and the zero clamp
+   guarantees the domain invariant.
 
 3. **CKAᵀ = 1 does not mean independence.** CKAᵀ is invariant to group
    mean shifts and overall scale, so a latent that encodes the protected
