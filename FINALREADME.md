@@ -839,10 +839,10 @@ These are the honest boundaries of what the implementation supports.
      depends on the data only through a norm-≤C vector: under
      substitution adjacency the sensitivity is **2C**, so each step's
      RDP is 2α/σ_g² (an earlier version used α/(2σ_g²), assuming
-     sensitivity C and under-accounting by 4×). This makes the
-     fairness-gradient mechanism **record-level DP under the same
-     adjacency as DP-SGD**, so its RDP composes additively with the
-     DP-SGD budget.
+     sensitivity C and under-accounting by 4×). The 2C bound also holds
+     under add/remove adjacency (Opacus's convention), so the
+     mechanism's RDP composes with the DP-SGD budget under either
+     adjacency definition.
 
    **Composition:** every mechanism touches the same records, so the
    true end-to-end guarantee is the composition of ALL budgets — VAE
@@ -854,13 +854,15 @@ These are the honest boundaries of what the implementation supports.
    Every run reports the component ε values and the composed TOTAL.
 
    **Honest magnitudes:** at the demo's settings the composed total is
-   large (tens to ~100, depending on the minority-group size and epoch
-   count) — a true statement about the mechanism, but not a strong
-   guarantee. The dominant cause is the balanced sampler's high
-   per-step inclusion rate for the minority group (q ≈ 0.1–0.34).
-   Reaching single-digit ε requires substantially higher noise, far
-   fewer epochs, or a smaller per-group batch — each at a fidelity
-   cost. The knob panel supports all three.
+   in the hundreds (roughly 200–1000 depending on the minority-group
+   size, sampler, and epoch count) — a true statement about the
+   mechanism, but not a strong guarantee. The dominant causes are the
+   high per-step inclusion rate for the minority group (q ≈ 0.1–0.34)
+   and the fairness-gradient mechanism's per-step cost (2α/σ_g² with
+   no subsampling credit). Reaching single-digit ε requires
+   substantially higher noise, far fewer epochs, a smaller per-group
+   batch, or a larger σ_g — each at a fidelity cost. The knob panel
+   supports all of them.
 
 2. **Generation-time statistics are DP-released, not raw.** The
    empirical latent mean/std used for sampling, and the numeric
@@ -903,7 +905,7 @@ These are the honest boundaries of what the implementation supports.
    and `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` helps with
    fragmentation.
 
-7. **Preprocessing statistics are not DP-released.** `load_sample`
+3. **Preprocessing statistics are not DP-released.** `load_sample`
    standardizes numerics with the raw column mean/std, median-imputes
    missing values, and derives the category sets from `pd.factorize` —
    all fresh computations on raw records, none accounted into the
@@ -916,13 +918,18 @@ These are the honest boundaries of what the implementation supports.
    a new statistic of the raw data through a private channel, needing
    its own release or explicit accounting.
 
-8. **The balanced sampler is shuffle-based, not Poisson.** Opacus's
-   subsampled-Gaussian bound formally assumes Poisson sampling at rate
-   q; using γ_max (the minority group's rate) is a conservative
-   approximation, not exact. A per-group Poisson sampler would make the
-   accounting tight.
+4. **Sampler and accounting.** The default sampler is now per-group
+   **Poisson** (`PoissonGroupSampler`): each record is included
+   independently per step with per-group probability q_g, making the
+   Poisson sampling assumption of Opacus's subsampled-Gaussian bound
+   exactly true (the accountant uses γ_max = max q_g). The earlier
+   shuffle-based `BalancedGroupSampler` (still available via
+   `SAMPLER='balanced'`) violates that assumption — Chua et al. (ICML
+   2024, arXiv:2403.17673) showed shuffle-based DP-SGD can leak more
+   than Poisson accounting reports — so under it the accounting is
+   NOT formally covered, only an approximation.
 
-9. **Committed reports predate the fixes.** `flip_full_report.html`
+5. **Committed reports predate the fixes.** `flip_full_report.html`
    and the demo report were generated before the accounting and
    fairness-direction fixes: they still show ε = 0.52 (an artifact of
    the broken accountant), a DCR ratio of 0.67 (< 1.0), a correlation
@@ -930,7 +937,7 @@ These are the honest boundaries of what the implementation supports.
    pipelines to regenerate them; the README's "good result" numbers
    should be re-derived from the new outputs.
 
-10. **The fairness metric's target code was hardcoded (fixed).** An
+6. **The fairness metric's target code was hardcoded (fixed).** An
    earlier version of `fairness_metrics` tested `cat[:, t_idx] == 1`,
    but that `1` is a code from `pd.factorize`, not the label `"1"`.
    When the factorize ordering flipped, the metric silently measured
@@ -941,7 +948,7 @@ These are the honest boundaries of what the implementation supports.
    `list(cat_encoders[TARGET_COL]).index('1')`; the downstream-fairness
    probe got the same treatment (±1 encoding, threshold at 0).
 
-11. **Synthetic numerics are clamped at 0 (domain knowledge).** The
+7. **Synthetic numerics are clamped at 0 (domain knowledge).** The
    DP range proxy (mean ± k·std) can still dip below zero for skewed
    columns — the committed report showed an income of −31.15. Both
    `generate()` and the full pipeline's `decode_latents()` now apply a
@@ -952,14 +959,14 @@ These are the honest boundaries of what the implementation supports.
    clip keeps values near the data's support, and the zero clamp
    guarantees the domain invariant.
 
-3. **CKAᵀ = 1 does not mean independence.** CKAᵀ is invariant to group
+8. **CKAᵀ = 1 does not mean independence.** CKAᵀ is invariant to group
    mean shifts and overall scale, so a latent that encodes the protected
    attribute purely through a mean shift scores as perfectly
    disentangled. "The latent is independent of the protected attribute"
    overstates what the metric measures (this limitation comes from the
    paper; it is repeated here so it is not lost).
 
-4. **The DP-difference headline can be gamed.** L_S pushes the synthetic
+9. **The DP-difference headline can be gamed.** L_S pushes the synthetic
    protected column toward uniform; a generator that merely *shuffled*
    the race column would also score DP difference ≈ 0. Two anti-gaming
    probes are therefore computed and reported alongside the headline:
@@ -971,25 +978,25 @@ These are the honest boundaries of what the implementation supports.
      broken out by real group, measuring whether the synthetic data
      transmits disparity to downstream users.
 
-5. **DCR ratio 5.5 is ambiguous.** A ratio well above 1 rules out
+10. **DCR ratio 5.5 is ambiguous.** A ratio well above 1 rules out
    memorization but can also mean the synthetic data is over-dispersed
    (too spread out) — a fidelity concern, not a privacy win. Read it
    together with the W1/TV fidelity numbers, not in isolation.
 
-6. **The accountant's sampling model is conservative, not exact.** The
-   balanced sampler draws fixed-size group-balanced batches, not
-   Poisson samples; the accountant uses the minority group's inclusion
-   rate (γ_max), which is valid but not tight. Exact accounting for
-   balanced sampling would need per-group RDP composition (the paper's
-   Prop. 1 / Eq. 13 machinery in full).
+11. **The accountant's sampling model.** Under the Poisson sampler the
+   accounting is exact for the sampling process (γ_max = the minority
+   group's per-record inclusion probability). Under the balanced
+   sampler it is an approximation that is NOT formally covered (see
+   item 8). Exact accounting for balanced sampling would need per-group
+   RDP composition (the paper's Prop. 1 / Eq. 13 machinery in full).
 
 ---
 
 ## Running everything
 
 ```powershell
-# Unit tests (30 tests)
-c:/Users/db234/OneDrive/Documents/Vector/.venv/Scripts/python.exe tests/test_flip_fairness.py
+# Unit tests (61 tests)
+c:/Users/db234/OneDrive/Documents/Vector/.venv/Scripts/python.exe -m pytest tests/test_flip_fairness.py -q
 
 # Quick demo: FLIP VAE + empirical-Gaussian latent sampling
 # (fast; fidelity is a lower bound — see Parts 6-7)

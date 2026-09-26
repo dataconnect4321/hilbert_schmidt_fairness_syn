@@ -40,6 +40,7 @@ from tabsyn.vae.flip_fairness import (
     uniform_attribute_loss,
     uniform_attribute_loss_per_sample,
     BalancedGroupSampler,
+    PoissonGroupSampler,
     RDPAccountant,
     GroupLevelDPMechanism,
     dp_release_mean_std,
@@ -159,6 +160,17 @@ TRADEOFF_PARAMS = {
     # ---- Data / compute knobs -------------------------------------------
     'SAMPLE_SIZE': 12000,      # rows drawn from the preprocessed CSV
     'BATCH_SIZE': 1024,        # split evenly across protected groups
+    # Sampler: 'poisson' (default) makes each record's inclusion
+    # independent per step, which is exactly what Opacus's subsampled-
+    # Gaussian accounting assumes. 'balanced' uses the shuffle-based
+    # BalancedGroupSampler (fixed-size group-balanced batches, every
+    # minority sample once per epoch) - Chua et al. (ICML 2024) showed
+    # shuffle-based DP-SGD can leak more than Poisson accounting
+    # reports, so the Poisson accounting is NOT formally valid for it.
+    'SAMPLER': 'poisson',
+    # Poisson steps per epoch (only used when SAMPLER='poisson').
+    # Match the balanced sampler's epoch length: ceil(m / per_group).
+    'POISSON_STEPS_PER_EPOCH': None,  # None -> ceil(m / per_group)
     'D_TOKEN': 8,
     'NUM_LAYERS': 2,
     'LR': 1e-3,
@@ -240,8 +252,23 @@ def train_flip(X_num, X_cat, categories, s_idx, params, device):
                       bias=True).to(device)
 
     groups = X_cat[:, s_idx].long().numpy()
-    sampler = BalancedGroupSampler(groups, params['BATCH_SIZE'],
-                                   seed=params['SEED'])
+    per_group = params['BATCH_SIZE'] // len(np.unique(groups))
+    if params.get('SAMPLER', 'poisson') == 'poisson':
+        # Per-group Poisson sampling: each record included independently
+        # with per-group probability q_g = per_group / m_g. This makes the
+        # Poisson sampling assumption of Opacus's RDP bound exactly true
+        # (the shuffle-based sampler violates it; Chua et al. ICML 2024).
+        m = int(np.bincount(groups).min())
+        steps_per_epoch = params.get('POISSON_STEPS_PER_EPOCH') or \
+            int(np.ceil(m / per_group))
+        sampler = PoissonGroupSampler(groups, per_group,
+                                       steps_per_epoch,
+                                       seed=params['SEED'])
+        print(f'Poisson sampling: {steps_per_epoch} steps/epoch, '
+              f'gamma_max={sampler.gamma_max:.4f}')
+    else:
+        sampler = BalancedGroupSampler(groups, params['BATCH_SIZE'],
+                                       seed=params['SEED'])
     loader = torch.utils.data.DataLoader(
         torch.utils.data.TensorDataset(X_num, X_cat),
         batch_sampler=sampler)
@@ -261,18 +288,20 @@ def train_flip(X_num, X_cat, categories, s_idx, params, device):
             noise_multiplier=params['NOISE_MULTIPLIER'],
             max_grad_norm=params['MAX_GRAD_NORM'],
             expected_batch_size=params['BATCH_SIZE'])
-        # Conservative sampling rate for the accountant: the balanced
-        # sampler shows every minority-group sample exactly once per
-        # epoch, so a minority record's per-step inclusion probability is
-        # per_group_batch / m_minority (gamma_max in the paper, Prop. 1 /
-        # Eq. 13) - LARGER than batch/N. Using batch/N would understate
-        # epsilon for exactly the group the fairness intervention targets.
-        groups_np = groups
-        m_minority = int(np.bincount(groups_np).min())
-        per_group = params['BATCH_SIZE'] // len(np.unique(groups_np))
+        # Sampling rate for the accountant: gamma_max, the largest
+        # per-record inclusion probability across groups. Under the
+        # Poisson sampler this is exactly the minority group's q; under
+        # the balanced sampler it is the conservative per-step rate
+        # (every minority sample appears once per epoch). Either way it
+        # is the rate that must be accounted, not batch/N.
+        if isinstance(sampler, PoissonGroupSampler):
+            gamma_max = sampler.gamma_max
+        else:
+            m_minority = int(np.bincount(groups).min())
+            gamma_max = per_group / m_minority
         accountant = RDPAccountant(
             noise_multiplier=params['NOISE_MULTIPLIER'],
-            sample_rate=per_group / m_minority,
+            sample_rate=gamma_max,
             delta=params['DP_DELTA'])
         # Group-level mechanism for the batch-coupled fairness terms
         # (SWD anchor + CKA^T): their gradients cannot be decomposed per
@@ -462,9 +491,12 @@ def generate(model, n_gen, device, params, X_num=None, X_cat=None,
     Pass the pre-computed release via stats_release=(mean, std) to avoid
     recomputing it.
 
-    Returns (syn_num, syn_cat, stats_rdp) where stats_rdp is a list of
-    (alpha, rdp) pairs covering BOTH statistics releases (latent mean/std
-    and the range proxy), for composition.
+    Returns (syn_num, syn_cat, stats_budgets) where stats_budgets is a
+    LIST of (alpha, rdp) pair lists - one per statistics release (latent
+    mean/std, range proxy) - for composition. Each release is a separate
+    budget: merging them into one pair list would create duplicate alpha
+    keys that compose_rdp_budgets's dict conversion would silently
+    collapse (keeping only the last release per alpha).
     """
     model.eval()
     # Probe latent shape
@@ -474,7 +506,7 @@ def generate(model, n_gen, device, params, X_num=None, X_cat=None,
     probe = model.forward_with_stages(dummy_num, dummy_cat)
     tokens, d = probe['mu_z'].shape[1], probe['mu_z'].shape[2]
 
-    stats_rdp = []
+    stats_budgets = []
     if X_num is not None and X_cat is not None:
         if stats_release is not None:
             lat_mean, lat_std = stats_release
@@ -485,7 +517,7 @@ def generate(model, n_gen, device, params, X_num=None, X_cat=None,
             lat_mean, lat_std, rdp1 = dp_release_mean_std(
                 mu_z, params['STATS_NOISE_MULTIPLIER'],
                 params['STATS_MAX_NORM'], mu_z.shape[0])
-            stats_rdp.extend(rdp1)
+            stats_budgets.append(rdp1)
             lat_mean = lat_mean.reshape(1, tokens, d)
             lat_std = lat_std.reshape(1, tokens, d)
         mu = lat_mean + lat_std * torch.randn(
@@ -514,7 +546,7 @@ def generate(model, n_gen, device, params, X_num=None, X_cat=None,
         r_mean, r_std, rdp2 = dp_release_mean_std(
             Xn, params['STATS_NOISE_MULTIPLIER'],
             params['STATS_MAX_NORM'], Xn.shape[0])
-        stats_rdp.extend(rdp2)
+        stats_budgets.append(rdp2)
         k = params['STATS_RANGE_K']
         lo = (r_mean - k * r_std).cpu().numpy()
         hi = (r_mean + k * r_std).cpu().numpy()
@@ -527,7 +559,7 @@ def generate(model, n_gen, device, params, X_num=None, X_cat=None,
     # only PUBLIC knowledge about the domain, so it costs no privacy.
     syn_num = np.clip(syn_num, 0.0, None)
 
-    return syn_num, syn_cat, stats_rdp
+    return syn_num, syn_cat, stats_budgets
 
 
 # ==========================================================================
@@ -1041,8 +1073,9 @@ def main():
                                                s_idx, params, device)
 
     print('\nGenerating synthetic data...')
-    syn_num, syn_cat, stats_rdp = generate(model, len(X_num), device, params,
-                                           X_num=X_num, X_cat=X_cat)
+    syn_num, syn_cat, stats_budgets = generate(model, len(X_num), device,
+                                               params, X_num=X_num,
+                                               X_cat=X_cat)
     synthetic_df = save_synthetic_data(syn_num, syn_cat, num_means, num_stds, encoders)
 
     fid = fidelity_metrics(X_num.numpy(), syn_num, X_cat.numpy(), syn_cat,
@@ -1067,8 +1100,7 @@ def main():
         budgets = [accountant.get_rdp_curve()]
         if group_mech is not None and group_mech.steps > 0:
             budgets.append(group_mech.get_rdp_curve())
-        if stats_rdp:
-            budgets.append(stats_rdp)
+        budgets.extend(stats_budgets)  # each release is its own budget
         eps_total, _ = compose_rdp_budgets(budgets, params['DP_DELTA'])
 
     print('\n' + '=' * 70)

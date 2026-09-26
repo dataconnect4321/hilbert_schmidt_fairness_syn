@@ -22,6 +22,7 @@ from tabsyn.vae.flip_fairness import (
     BalancedGroupSampler,
     RDPAccountant,
     GroupLevelDPMechanism,
+    compose_rdp_budgets,
     register_tabsyn_grad_samplers,
     get_dp_trainable_parameters,
 )
@@ -407,8 +408,26 @@ def main(args):
     print('Training time: {:.4f} mins'.format((end_time - start_time)/60))
     if accountant is not None:
         eps_spent, alpha_opt = accountant.get_privacy_spent()
-        print(f'Final privacy guarantee: (epsilon={eps_spent:.4f}, delta={args.dp_delta}) '
-              f'at Renyi order alpha={alpha_opt}')
+        print(f'Final privacy guarantee (record-level, per-sample losses): '
+              f'(epsilon={eps_spent:.4f}, delta={args.dp_delta})')
+        if group_mech is not None and group_mech.steps > 0:
+            eps_g, _ = group_mech.get_privacy_spent(args.dp_delta)
+            print(f'Final privacy guarantee (fairness-gradient mechanism): '
+                  f'(epsilon={eps_g:.4f}, delta={args.dp_delta})')
+            # Compose the two budgets: sum RDP at each alpha, convert
+            # once (compose_rdp_budgets). Adding the epsilons directly
+            # is not a valid composition rule.
+            eps_total, _ = compose_rdp_budgets(
+                [accountant.get_rdp_curve(), group_mech.get_rdp_curve()],
+                args.dp_delta)
+            print(f'TOTAL composed epsilon (VAE stage): {eps_total:.4f} '
+                  f'at delta={args.dp_delta}')
+        print('\nNOTE: this epsilon covers the VAE stage only. The saved '
+              'train_z.npy (encoded training records) is consumed by '
+              'tabsyn/main.py, which trains the latent diffusion WITHOUT '
+              'DP - the end-to-end pipeline through that path is NOT '
+              'private. For a private end-to-end pipeline use '
+              'run_flip_full_pipeline.py (DP-SGD Stage 2).')
     
     # Saving latent embeddings
     with torch.no_grad():

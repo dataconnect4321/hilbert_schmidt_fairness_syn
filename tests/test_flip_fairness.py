@@ -32,6 +32,7 @@ from tabsyn.vae.flip_fairness import (
     uniform_attribute_loss,
     uniform_attribute_loss_per_sample,
     BalancedGroupSampler,
+    PoissonGroupSampler,
     RDPAccountant,
     GroupLevelDPMechanism,
     dp_release_mean_std,
@@ -482,6 +483,77 @@ def test_compose_stats_release_pairs():
     ec, _ = compose_rdp_budgets(
         [mech.get_rdp_curve(), rdp], 1e-5)
     assert np.isfinite(ec) and ec > 0
+
+
+def test_compose_duplicate_alphas_summed():
+    """Two releases sharing an alpha grid, passed as ONE pair list,
+    must SUM per alpha - not silently drop all but the last release
+    (the dict() collapse bug)."""
+    r1 = [(2.0, 1.0), (10.0, 5.0)]
+    r2 = [(2.0, 2.0), (10.0, 10.0)]
+    # As one list with duplicate alphas: must equal composing them
+    # as two separate budgets.
+    eps_merged, _ = compose_rdp_budgets([r1 + r2], 1e-5)
+    eps_separate, _ = compose_rdp_budgets([r1, r2], 1e-5)
+    assert abs(eps_merged - eps_separate) < 1e-9
+
+
+def test_rdp_curve_uses_subsampled_bound():
+    """get_rdp_curve must retain subsampling amplification (via Opacus's
+    compute_rdp), not the unamplified Gaussian bound that inflated the
+    composed total 2-5x."""
+    acc = RDPAccountant(noise_multiplier=1.0, sample_rate=0.05,
+                        delta=1e-5)
+    for _ in range(100):
+        acc.step()
+    curve = acc.get_rdp_curve()
+    # Unamplified bound at alpha=2: 2/(2*1)*100 = 100. Subsampled at
+    # q=0.05 must be substantially smaller.
+    assert curve[2.0] < 20.0
+
+
+# --------------------------------------------------------------------------
+# PoissonGroupSampler
+# --------------------------------------------------------------------------
+
+def test_poisson_sampler_expected_representation():
+    """Each group's average per-step count should approximate
+    per_group_batch (same expected representation per group)."""
+    labels = np.array([0] * 1000 + [1] * 500 + [2] * 300)
+    sampler = PoissonGroupSampler(labels, per_group_batch=30,
+                                   steps_per_epoch=200, seed=42)
+    counts = {0: 0, 1: 2, 2: 0}
+    n_steps = 0
+    for batch in iter(sampler):
+        n_steps += 1
+        for g in counts:
+            counts[g] += int((labels[np.array(batch)] == g).sum())
+    for g in counts:
+        avg = counts[g] / n_steps
+        assert abs(avg - 30) < 8  # binomial noise
+
+
+def test_poisson_sampler_gamma_max():
+    """gamma_max is the minority group's inclusion probability."""
+    labels = np.array([0] * 1000 + [1] * 500 + [2] * 300)
+    sampler = PoissonGroupSampler(labels, per_group_batch=30,
+                                   steps_per_epoch=10, seed=0)
+    assert abs(sampler.gamma_max - 30 / 300) < 1e-9
+
+
+def test_poisson_sampler_deterministic_with_seed():
+    labels = np.array([0] * 100 + [1] * 100)
+    s1 = PoissonGroupSampler(labels, 10, 20, seed=7)
+    s2 = PoissonGroupSampler(labels, 10, 20, seed=7)
+    assert [list(b) for b in iter(s1)] == [list(b) for b in iter(s2)]
+
+
+def test_poisson_sampler_rejects_single_group():
+    try:
+        PoissonGroupSampler(np.zeros(10), 4, 5)
+        assert False, 'should have raised'
+    except ValueError:
+        pass
 
 
 # --------------------------------------------------------------------------

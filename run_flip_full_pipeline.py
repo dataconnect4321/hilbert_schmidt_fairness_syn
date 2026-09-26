@@ -248,7 +248,7 @@ def decode_latents(vae_model, latents, device, X_num=None, params=None):
 
     if X_num is not None and params is not None:
         Xn = X_num.to(device)
-        r_mean, r_std, stats_rdp = dp_release_mean_std(
+        r_mean, r_std, stats_budget = dp_release_mean_std(
             Xn, params['STATS_NOISE_MULTIPLIER'],
             params['STATS_MAX_NORM'], Xn.shape[0])
         k = params['STATS_RANGE_K']
@@ -260,7 +260,7 @@ def decode_latents(vae_model, latents, device, X_num=None, params=None):
     # non-negative by definition. Public knowledge, no privacy cost.
     syn_num = np.clip(syn_num, 0.0, None)
     if X_num is not None and params is not None:
-        return syn_num, syn_cat, stats_rdp
+        return syn_num, syn_cat, [stats_budget]
     return syn_num, syn_cat, []
 
 
@@ -337,8 +337,9 @@ def main():
           f'({dparams["SAMPLE_STEPS"]} NFE)...')
     sampled = sample_from_diffusion(diffusion_model, z_mean, n_gen,
                                     latent_shape, dparams, device)
-    syn_num, syn_cat, stats_rdp = decode_latents(vae_model, sampled, device,
-                                                  X_num=X_num, params=params)
+    syn_num, syn_cat, stats_budgets = decode_latents(vae_model, sampled,
+                                                      device, X_num=X_num,
+                                                      params=params)
 
     # ---- Export ----------------------------------------------------------
     synthetic_df = decode_synthetic_data(syn_num, syn_cat, num_means,
@@ -375,8 +376,7 @@ def main():
             budgets.append(group_mech.get_rdp_curve())
         if diff_accountant is not None and diff_accountant.steps > 0:
             budgets.append(diff_accountant.get_rdp_curve())
-        if stats_rdp:
-            budgets.append(stats_rdp)
+        budgets.extend(stats_budgets)  # each release is its own budget
         eps_total, _ = compose_rdp_budgets(budgets, params['DP_DELTA'])
 
     print('\n' + '=' * 70)

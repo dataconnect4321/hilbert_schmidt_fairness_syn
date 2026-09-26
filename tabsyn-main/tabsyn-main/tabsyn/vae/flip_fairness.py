@@ -205,16 +205,26 @@ class RDPAccountant:
         order alpha and converts to (eps, delta) once, rather than
         adding per-mechanism epsilons (which is not a valid rule).
 
-        Under the Opacus accountant the subsampled-Gaussian RDP is not
-        exposed per-alpha, so the curve is approximated by the
-        unamplified pure-Gaussian bound - conservative (>= the true
-        RDP at every alpha), so the composed epsilon is a valid upper
-        bound.
+        Uses Opacus's audited subsampled-Gaussian RDP bound
+        (compute_rdp, Wang et al. 2019) when available, so the curve
+        retains the full subsampling amplification. An earlier version
+        fell back to the unamplified pure-Gaussian bound (alpha/2*sigma^2
+        per step), which is valid but discards all amplification and
+        inflated the composed total by 2-5x. Without Opacus, the
+        unamplified bound is used (conservative upper bound).
         """
         if self.steps == 0:
             return {a: 0.0 for a in self.alphas}
-        return {a: (a / (2.0 * self.noise_multiplier ** 2)) * self.steps
-                for a in self.alphas}
+        try:
+            from opacus.accountants.analysis.rdp import compute_rdp
+            curve = compute_rdp(q=self.sample_rate,
+                                noise_multiplier=self.noise_multiplier,
+                                steps=self.steps,
+                                orders=self.alphas)
+            return {a: float(e) for a, e in zip(self.alphas, curve)}
+        except ImportError:
+            return {a: (a / (2.0 * self.noise_multiplier ** 2)) * self.steps
+                    for a in self.alphas}
 
     def get_privacy_spent(self):
         """Return (epsilon, optimal_alpha) of the DP guarantee so far.
@@ -624,7 +634,7 @@ def compose_rdp_budgets(budgets, delta, alphas=None):
     Args:
         budgets: list of either
             - {alpha: rdp} dicts (from RDPAccountant.get_rdp_curve(),
-              GroupLevelDPMechanism via get_rdp_curve, or
+              GroupLevelDPMechanism.get_rdp_curve(), or
               dp_release_mean_std's rdp_orders converted with
               dict(rdp_orders)), or
             - (alpha, rdp) pair lists (converted internally).
@@ -633,16 +643,32 @@ def compose_rdp_budgets(budgets, delta, alphas=None):
 
     Returns:
         (epsilon, optimal_alpha) of the composed guarantee.
+
+    NOTE: multiple releases passed as ONE pair list with duplicate
+    alpha keys would silently drop all but the last entry per alpha
+    (dict() keeps the last). Either pass each release as its own budget
+    in the list, or pre-sum by alpha - this function sums correctly
+    across the budgets it is given, but cannot detect duplicates
+    within a single pair list.
     """
     if alphas is None:
         alphas = [1 + x / 10.0 for x in range(1, 100)] + \
             list(range(11, 505))
-    # Normalize every budget to {alpha: rdp}
+    # Normalize every budget to {alpha: rdp}, SUMMING duplicate alpha
+    # entries within a pair list (two dp_release_mean_std releases
+    # extended into one list share the same alpha grid; dict() would
+    # keep only the last and silently drop the other release).
     curves = []
     for b in budgets:
         if not b:
             continue
-        curves.append(dict(b) if not isinstance(b, dict) else b)
+        if isinstance(b, dict):
+            curves.append(dict(b))
+        else:
+            summed = {}
+            for alpha, rdp in b:
+                summed[alpha] = summed.get(alpha, 0.0) + rdp
+            curves.append(summed)
 
     if not curves:
         return 0.0, None
@@ -731,3 +757,71 @@ class BalancedGroupSampler(Sampler):
 
     def __len__(self):
         return self.num_batches
+
+
+class PoissonGroupSampler(Sampler):
+    """Per-group Poisson (independent) sampling.
+
+    WHY: Opacus's subsampled-Gaussian RDP bound formally assumes each
+    record is included in each step independently with probability q
+    (Poisson sampling). The shuffle-based BalancedGroupSampler draws
+    fixed-size batches in which every minority sample appears exactly
+    once per epoch - a different sampling process, and Chua et al.
+    (ICML 2024, arXiv:2403.17673) showed shuffle-based DP-SGD can leak
+    MORE than Poisson accounting reports. Using this sampler makes the
+    Poisson accounting assumption exactly true.
+
+    Each step, every record is included independently with probability
+    q = per_group_batch / group_size computed PER GROUP, so every group
+    has the same expected representation (the balanced-sampling goal of
+    Sec. 4.2.1) while each record's inclusion is independent. The
+    accountant's sampling rate is gamma_max = max over groups of
+    q_g = per_group_batch / m_g (the minority group's rate, the largest).
+
+    Batch sizes are random (Binomial); pass expected_batch_size to the
+    DPOptimizer accordingly. Empty batches are skipped.
+
+    Args:
+        group_labels: (n,) protected-group labels.
+        per_group_batch: expected number of samples per group per step.
+        steps_per_epoch: number of Poisson steps per epoch.
+        seed: RNG seed.
+    """
+
+    def __init__(self, group_labels, per_group_batch: int,
+                 steps_per_epoch: int, seed: int = 0):
+        self.labels = np.asarray(group_labels)
+        self.groups = np.unique(self.labels)
+        self.n_groups = len(self.groups)
+        if self.n_groups < 2:
+            raise ValueError("Poisson sampling needs >= 2 protected groups.")
+        self.per_group_batch = int(per_group_batch)
+        self.steps_per_epoch = int(steps_per_epoch)
+        self.seed = seed
+        self.epoch = 0
+
+        self.group_indices = {g: np.where(self.labels == g)[0]
+                               for g in self.groups}
+        # Per-group inclusion probability: same expected representation
+        # per group regardless of its size.
+        self.q = {g: min(1.0, self.per_group_batch / len(idx))
+                  for g, idx in self.group_indices.items()}
+        # gamma_max: the largest per-record inclusion probability (the
+        # minority group's) - the rate the accountant must use.
+        self.gamma_max = max(self.q.values())
+
+    def __iter__(self):
+        rng = np.random.default_rng(self.seed + self.epoch)
+        self.epoch += 1
+        for _ in range(self.steps_per_epoch):
+            batch = []
+            for g in self.groups:
+                idx = self.group_indices[g]
+                mask = rng.random(len(idx)) < self.q[g]
+                batch.extend(idx[mask].tolist())
+            if batch:
+                rng.shuffle(batch)
+                yield batch
+
+    def __len__(self):
+        return self.steps_per_epoch
