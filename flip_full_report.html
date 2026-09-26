@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FLIP Training Report</title>
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; margin: 0; background: #f4f6f8; color: #22303c; }
+  header { background: #1d3557; color: #fff; padding: 30px 40px; }
+  header h1 { margin: 0 0 6px 0; }
+  header p { margin: 0; opacity: 0.85; }
+  main { max-width: 1000px; margin: 0 auto; padding: 30px 20px; }
+  section { background: #fff; border-radius: 10px; padding: 25px; margin-bottom: 25px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  h2 { margin-top: 0; color: #1d3557; border-bottom: 2px solid #e0e4e8; padding-bottom: 8px; }
+  .cards { display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 15px; }
+  .card { background: #f0f4f8; border-radius: 8px; padding: 12px 18px; min-width: 150px; }
+  .card-label { display: block; font-size: 0.75em; text-transform: uppercase; color: #6b7a8c; }
+  .card-value { display: block; font-size: 1.15em; font-weight: 600; }
+  .ok-card { background: #e6f4ea; } .warn-card { background: #fff4e0; } .bad-card { background: #fdecea; }
+  .explanation { background: #f0f4f8; border-radius: 8px; padding: 15px 20px; margin-bottom: 15px; }
+  .explanation p { margin: 4px 0; line-height: 1.55; font-size: 0.92em; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.92em; margin-top: 10px; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #e8ecf0; }
+  th { background: #f0f4f8; }
+  code { background: #e2e8ee; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>FLIP Training Report</h1>
+  <p>Fair + Private TabSyn VAE on bmo_nationwide.csv &middot; protected attribute: derived_race</p>
+</header>
+<main>
+
+  <section>
+    <h2>Fidelity - how close is the synthetic data to the real data?</h2>
+    <div class="explanation">
+      <p><strong>Numeric Wasserstein-1</strong> measures the average "cost" of
+      moving the synthetic numeric distribution onto the real one, normalized by
+      each column's standard deviation. 0 = identical distributions.</p>
+      <p><strong>Categorical total variation (TV)</strong> is the fraction of
+      categorical records that would need to change category for the synthetic
+      frequency distribution to exactly match the real one. 0 = identical.</p>
+      <p><strong>Correlation-matrix delta</strong> is the average absolute
+      difference between the real and synthetic numeric correlation matrices -
+      it checks whether relationships between columns (not just each column on
+      its own) survived generation.</p>
+    </div>
+    <div class="cards">
+      <div class="card ok-card"><span class="card-label">Numeric W1</span><span class="card-value">0.0889 (Good)</span></div>
+      <div class="card warn-card"><span class="card-label">Categorical TV</span><span class="card-value">0.1962 (Moderate)</span></div>
+      <div class="card bad-card"><span class="card-label">Correlation delta</span><span class="card-value">0.1797 (Poor)</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Privacy - could synthetic records leak real training data?</h2>
+    <div class="explanation">
+      <p><strong>DCR ratio</strong> (distance-to-closest-record) compares how
+      close synthetic records sit to the real training data versus how close a
+      held-out real record sits to that same training data. A ratio near or
+      above 1.0 means synthetic records are no closer to individual training
+      records than other real records naturally are - i.e. no evidence of
+      memorization. A ratio well below 0.5 would suggest the model copied
+      training examples rather than generalizing.</p>
+      <p><strong>DP guarantee (epsilon, delta)</strong> is the formal
+      differential-privacy bound from DP-SGD training, tracked by a Renyi-DP
+      accountant across every training step. It holds regardless of what any
+      attacker does with the trained model - unlike DCR, which is only an
+      empirical check on this one generated batch.</p>
+    </div>
+    <div class="cards">
+      <div class="card warn-card"><span class="card-label">DCR ratio</span><span class="card-value">0.6691 (Moderate)</span></div>
+      <div class="card"><span class="card-label">DP guarantee</span><span class="card-value">0.52</span></div>
+    </div>
+    <p style="font-size:0.9em; color:#555;">A lower epsilon is a stronger guarantee; 0.52 at delta=1e-05 is a typical research-grade budget.</p>
+  </section>
+
+  <section>
+    <h2>Fairness - does the synthetic data reduce group bias?</h2>
+    <div class="explanation">
+      <p>Each protected group's <strong>loan origination rate</strong> is shown
+      below for the real data and the FLIP-generated synthetic data. The
+      <strong>demographic parity (DP) difference</strong> is the gap between the
+      highest- and lowest-rate group; the <strong>DP ratio</strong> is the
+      lowest rate divided by the highest. The widely used four-fifths rule
+      treats a ratio below 0.80 as evidence of disparate impact.</p>
+      <p>FLIP's disentanglement objective (CKA-based, Sec. 4.2-4.3 of the
+      paper) pushes the VAE's latent and reconstructed representations toward
+      statistical independence from the protected attribute during Phase 2
+      training, so the synthetic data's group gap should shrink relative to
+      the real data's.</p>
+    </div>
+    <table>
+      <thead><tr><th>Group</th><th>Real rate</th><th>Synthetic rate</th></tr></thead>
+      <tbody><tr><td>White</td><td>0.3909</td><td>0.4432</td></tr><tr><td>Asian</td><td>0.4637</td><td>0.4966</td></tr><tr><td>Black or African American</td><td>0.5608</td><td>0.3884</td></tr></tbody>
+    </table>
+    <div class="cards" style="margin-top:15px;">
+      <div class="card"><span class="card-label">DP difference (real &rarr; syn)</span><span class="card-value">0.1699 &rarr; 0.1082</span></div>
+      <div class="card warn-card"><span class="card-label">DP ratio (real &rarr; syn)</span><span class="card-value">0.6971 &rarr; 0.7821 (Moderate)</span></div>
+      <div class="card"><span class="card-label">Fairness gain</span><span class="card-value">+0.0616</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Synthetic data sample</h2>
+    <p style="font-size:0.9em; color:#555;">First 10 rows of the
+    12,000-row synthetic dataset generated by decoding random
+    latents through the trained FLIP VAE (numeric columns denormalized,
+    categorical columns decoded back to their original labels). The full
+    dataset was saved to <code>Data/flip_synthetic_bmo_nationwide.csv</code>.</p>
+    <div style="overflow-x:auto;">
+    <table>
+      <thead><tr><th>loan_amount</th><th>income</th><th>loan_to_value_ratio</th><th>property_value</th><th>tract_population</th><th>derived_race</th><th>target</th><th>conforming_loan_limit</th><th>derived_loan_product_type</th></tr></thead>
+      <tbody><tr><td>139889.47</td><td>186.51</td><td>90.45</td><td>572222.19</td><td>4024.18</td><td>Black or African American</td><td>1</td><td>C</td><td>Conventional:Subordinate Lien</td></tr><tr><td>29313.51</td><td>-31.15</td><td>75.76</td><td>476034.55</td><td>7612.14</td><td>Black or African American</td><td>0</td><td>C</td><td>Conventional:First Lien</td></tr><tr><td>283640.53</td><td>341.64</td><td>81.22</td><td>426410.00</td><td>2835.42</td><td>Asian</td><td>1</td><td>C</td><td>Conventional:Subordinate Lien</td></tr><tr><td>292510.33</td><td>247.45</td><td>75.19</td><td>438344.04</td><td>5935.40</td><td>White</td><td>1</td><td>C</td><td>Conventional:First Lien</td></tr><tr><td>199562.83</td><td>53.40</td><td>89.23</td><td>975358.63</td><td>3262.64</td><td>Black or African American</td><td>0</td><td>C</td><td>Conventional:Subordinate Lien</td></tr><tr><td>454135.14</td><td>345.29</td><td>89.67</td><td>1654926.59</td><td>4503.43</td><td>Asian</td><td>1</td><td>NC</td><td>Conventional:Subordinate Lien</td></tr><tr><td>42896.95</td><td>63.50</td><td>79.19</td><td>4999.99</td><td>2831.69</td><td>Black or African American</td><td>1</td><td>C</td><td>Conventional:Subordinate Lien</td></tr><tr><td>768716.98</td><td>389.84</td><td>103.07</td><td>1349624.35</td><td>4633.55</td><td>Black or African American</td><td>1</td><td>NC</td><td>Conventional:Subordinate Lien</td></tr><tr><td>131453.51</td><td>10.80</td><td>85.28</td><td>348545.79</td><td>3747.25</td><td>Black or African American</td><td>0</td><td>C</td><td>Conventional:First Lien</td></tr><tr><td>37249.47</td><td>85.62</td><td>85.95</td><td>285112.73</td><td>6636.13</td><td>Black or African American</td><td>0</td><td>C</td><td>Conventional:Subordinate Lien</td></tr></tbody>
+    </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Training configuration</h2>
+    <p style="font-size:0.9em; color:#555;">The fidelity/privacy/fairness
+    trade-off knobs used for this run (see <code>TRADEOFF_PARAMS</code> in
+    <code>run_flip_demo.py</code> for what each one controls).</p>
+    <table>
+      <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+      <tbody><tr><td>LAMBDA_FAIR</td><td>2.0</td></tr><tr><td>PHASE1_EPOCHS</td><td>100</td></tr><tr><td>PHASE2_EPOCHS</td><td>60</td></tr><tr><td>NOISE_MULTIPLIER</td><td>0.8</td></tr><tr><td>MAX_GRAD_NORM</td><td>1.0</td></tr><tr><td>DP_DELTA</td><td>1e-05</td></tr><tr><td>USE_DP</td><td>True</td></tr><tr><td>BETA</td><td>0.001</td></tr><tr><td>MAX_DIV_PENALTY</td><td>10.0</td></tr><tr><td>PHASE2_LR_SCALE</td><td>0.2</td></tr><tr><td>ADAM_EPS</td><td>0.0001</td></tr><tr><td>MAX_OPTIMIZER_GRAD_NORM</td><td>5.0</td></tr><tr><td>WEIGHT_DECAY</td><td>0.01</td></tr><tr><td>LOGIT_CLAMP</td><td>15.0</td></tr><tr><td>NUM_RECON_CLAMP</td><td>8.0</td></tr><tr><td>SAMPLE_SIZE</td><td>12000</td></tr><tr><td>BATCH_SIZE</td><td>1024</td></tr><tr><td>D_TOKEN</td><td>8</td></tr><tr><td>NUM_LAYERS</td><td>2</td></tr><tr><td>LR</td><td>0.001</td></tr><tr><td>SEED</td><td>42</td></tr><tr><td>DEVICE</td><td>cuda</td></tr><tr><td>diffusion.EPOCHS</td><td>3000</td></tr><tr><td>diffusion.BATCH_SIZE</td><td>4096</td></tr><tr><td>diffusion.LR</td><td>0.001</td></tr><tr><td>diffusion.DIM_T</td><td>1024</td></tr><tr><td>diffusion.SAMPLE_STEPS</td><td>50</td></tr><tr><td>diffusion.N_GEN</td><td>None</td></tr></tbody>
+    </table>
+  </section>
+
+</main>
+</body>
+</html>

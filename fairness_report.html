@@ -1,0 +1,1972 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Fairness Audit Report - HMDA Loan Data</title>
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; margin: 0; background: #f4f6f8; color: #22303c; }
+  header { background: #1d3557; color: #fff; padding: 30px 40px; }
+  header h1 { margin: 0 0 6px 0; }
+  header p { margin: 0; opacity: 0.85; }
+  main { max-width: 1100px; margin: 0 auto; padding: 30px 20px; }
+  .metric-section { background: #fff; border-radius: 10px; padding: 25px; margin-bottom: 25px;
+                     box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  h2 { margin-top: 0; color: #1d3557; border-bottom: 2px solid #e0e4e8; padding-bottom: 8px; }
+  .metric-cards { display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 15px; }
+  .card { background: #f0f4f8; border-radius: 8px; padding: 12px 18px; min-width: 130px; }
+  .card-label { display: block; font-size: 0.75em; text-transform: uppercase; color: #6b7a8c; }
+  .card-value { display: block; font-size: 1.15em; font-weight: 600; }
+  .ok-card { background: #e6f4ea; } .warn-card { background: #fff4e0; } .bad-card { background: #fdecea; }
+  .conclusion { border-radius: 8px; padding: 14px 18px; margin-bottom: 18px; line-height: 1.5; }
+  .ok { background: #e6f4ea; border-left: 5px solid #2a9d8f; }
+  .warn { background: #fff8e6; border-left: 5px solid #e9c46a; }
+  .bad { background: #fdecea; border-left: 5px solid #e76f51; }
+  .ok-text { color: #2a9d8f; font-weight: 600; }
+  .warn-text { color: #d4a017; font-weight: 600; }
+  .bad-text { color: #e76f51; font-weight: 600; }
+  .explanation { background: #f0f4f8; border-radius: 8px; padding: 15px 20px; margin-bottom: 18px; }
+  .explanation h3 { margin: 0 0 8px 0; color: #1d3557; font-size: 1.05em; }
+  .explanation p { margin: 6px 0; line-height: 1.55; font-size: 0.92em; }
+  code { background: #e2e8ee; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.92em; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #e8ecf0; }
+  th { background: #f0f4f8; }
+  td.group { font-weight: 500; }
+  .bar-cell { padding: 4px 10px; }
+  .bar { height: 14px; border-radius: 4px; min-width: 2px; }
+  footer { text-align: center; color: #8a97a5; font-size: 0.85em; padding: 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Fairness Audit Report</h1>
+  <p>HMDA Loan Data (BMO Nationwide) &middot; Generated with fairlearn &middot; 2026-09-24 13:51</p>
+</header>
+<main>
+  <section class="metric-section">
+    <h2>Executive Summary</h2>
+    <p>Dataset rows: <strong>28,142</strong> &middot; Overall origination rate: <strong>0.5873</strong></p>
+    <p>This report evaluates fairness of loan origination outcomes across sensitive
+    demographic attributes (derived ethnicity, race, and sex), individually and in
+    intersectional combinations, using fairlearn's demographic parity metrics
+    supplemented with <strong>statistical significance tests</strong> (Wilson confidence
+    intervals and chi-square tests) that are robust to unequal group sample sizes.
+    The <strong>four-fifths (80%) rule</strong> is applied as a descriptive threshold:
+    a selection-rate ratio below 0.80 between the highest and lowest groups is treated
+    as evidence of potential disparate impact, but each verdict is cross-checked against
+    statistical significance before a bias conclusion is drawn.</p>
+    
+    <div class="explanation">
+      <h3>Note on the 'Joint' value in derived_sex</h3>
+      <p>In HMDA data, <strong>Joint</strong> in <code>derived_sex</code> indicates a
+      <strong>joint application</strong> - typically two applicants (e.g., a married
+      couple) reported together, where the sexes of the primary and secondary
+      applicants differ or are combined. It is not a missing or unknown value.
+      This report keeps <em>Joint</em> as its own group because it is a legitimate,
+      distinct category, but its origination rate reflects two-applicant households
+      (which often have higher combined income and different approval dynamics),
+      so it is not directly comparable to single-applicant sex groups. If a strict
+      single-applicant comparison is desired, filter out <code>Joint</code> records
+      before comparing Male vs. Female rates.</p>
+    </div>
+    <table>
+      <thead><tr><th>Attribute(s)</th><th>DP Difference</th><th>DP Ratio</th><th>Verdict</th></tr></thead>
+      <tbody><tr><td>derived_ethnicity</td><td>0.2237</td><td>0.6560</td><td class='bad-text'>POTENTIAL BIAS - fails four-fifths rule</td></tr><tr><td>derived_race</td><td>0.6533</td><td>0.0000</td><td class='bad-text'>POTENTIAL BIAS - fails four-fifths rule</td></tr><tr><td>derived_sex</td><td>0.1754</td><td>0.7427</td><td class='bad-text'>POTENTIAL BIAS - fails four-fifths rule</td></tr><tr><td>derived_ethnicity + derived_race</td><td>0.6979</td><td>0.0000</td><td class='bad-text'>POTENTIAL BIAS - fails four-fifths rule</td></tr><tr><td>derived_ethnicity + derived_sex</td><td>0.3098</td><td>0.5601</td><td class='bad-text'>POTENTIAL BIAS - fails four-fifths rule</td></tr><tr><td>derived_race + derived_sex</td><td>1.0000</td><td>0.0000</td><td class='bad-text'>POTENTIAL BIAS - fails four-fifths rule</td></tr><tr><td>derived_ethnicity + derived_race + derived_sex</td><td>1.0000</td><td>0.0000</td><td class='bad-text'>POTENTIAL BIAS - fails four-fifths rule</td></tr></tbody>
+    </table>
+  </section>
+  
+    <section class="metric-section">
+      <h2>derived_ethnicity</h2>
+      <div class="explanation">
+        <h3>How these metrics work</h3>
+        <p><strong>Selection Rate.</strong> The proportion of records in a group
+    that received the positive outcome (loan originated). This is the raw group-level
+    approval rate and the basis for all demographic parity metrics.</p>
+        <p><strong>Demographic Parity Difference &amp; Ratio.</strong> The difference is
+    the gap between the highest and lowest group selection rates; the ratio is the lowest
+    rate divided by the highest. The <em>four-fifths (80%) rule</em> treats a ratio below
+    0.80 as evidence of disparate impact. <em>Limitation:</em> these are purely descriptive
+    thresholds and are sensitive to sample size - small groups can produce misleading
+    ratios purely by chance.</p>
+        <p><strong>Wilson 95% Confidence Intervals.</strong> For each group we compute
+    a Wilson score interval around its selection rate. Unlike the naive normal interval,
+    the Wilson interval remains accurate for small or skewed samples. If the intervals of
+    two groups do not overlap, their rates differ with at least 95% confidence. This makes
+    disparity claims robust to sample size: a large gap between huge groups is significant,
+    while the same gap between tiny groups may not be.</p>
+        <p><strong>Chi-Square Test of Independence.</strong> Tests the null hypothesis
+    that group membership and loan outcome are statistically independent (i.e., all groups
+    share the same underlying approval rate). A p-value below 0.05 means the observed
+    differences in rates across groups are unlikely to have arisen by chance alone.
+    Unlike the four-fifths rule, this test weighs evidence strength by sample size rather
+    than flagging any raw gap. Groups with fewer than 5 records are pooled to keep the
+    test valid.</p>
+      </div>
+      <div class="metric-cards">
+        <div class="card"><span class="card-label">DP Difference</span><span class="card-value">0.2237</span></div>
+        <div class="card"><span class="card-label">DP Ratio</span><span class="card-value">0.6560</span></div>
+        <div class="card"><span class="card-label">Chi-Square</span><span class="card-value">495.9</span></div>
+        <div class="card"><span class="card-label">p-value</span><span class="card-value">3.64e-107</span></div>
+        <div class="card"><span class="card-label">Groups</span><span class="card-value">4</span></div>
+        <div class="card bad-card"><span class="card-label">Verdict</span><span class="card-value">POTENTIAL BIAS - fails four-fifths rule</span></div>
+      </div>
+      <div class="conclusion bad">
+        <strong>Conclusion:</strong> The ratio (0.656) falls below the 0.80 four-fifths threshold, indicating disparate impact. The highest-rate group (Joint, 65.0%) is approved at 65.6% of the rate of the lowest-rate group (Hispanic or Latino, 42.6%). <strong>Statistically significant:</strong> the 95% Wilson confidence intervals of the highest and lowest groups do not overlap, and the chi-square test of independence rejects the null hypothesis of equal rates (p = 3.64e-107). The gap is unlikely to be a sampling artifact.
+      </div>
+      <table>
+        <thead><tr><th>Group</th><th>Count</th><th>Selection Rate</th><th>95% CI (Wilson)</th><th style="width:30%">Rate</th></tr></thead>
+        <tbody>
+        <tr>
+          <td class="group">Joint</td>
+          <td>786</td>
+          <td>0.6501</td>
+          <td>[0.616, 0.683]</td>
+          <td class="bar-cell"><div class="bar" style="width:65%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino</td>
+          <td>21,522</td>
+          <td>0.6159</td>
+          <td>[0.609, 0.622]</td>
+          <td class="bar-cell"><div class="bar" style="width:61%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available</td>
+          <td>2,047</td>
+          <td>0.5603</td>
+          <td>[0.539, 0.582]</td>
+          <td class="bar-cell"><div class="bar" style="width:56%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino</td>
+          <td>3,787</td>
+          <td>0.4265</td>
+          <td>[0.411, 0.442]</td>
+          <td class="bar-cell"><div class="bar" style="width:42%; background:#e76f51"></div></td>
+        </tr></tbody>
+      </table>
+    </section>
+    <section class="metric-section">
+      <h2>derived_race</h2>
+      <div class="explanation">
+        <h3>How these metrics work</h3>
+        <p><strong>Selection Rate.</strong> The proportion of records in a group
+    that received the positive outcome (loan originated). This is the raw group-level
+    approval rate and the basis for all demographic parity metrics.</p>
+        <p><strong>Demographic Parity Difference &amp; Ratio.</strong> The difference is
+    the gap between the highest and lowest group selection rates; the ratio is the lowest
+    rate divided by the highest. The <em>four-fifths (80%) rule</em> treats a ratio below
+    0.80 as evidence of disparate impact. <em>Limitation:</em> these are purely descriptive
+    thresholds and are sensitive to sample size - small groups can produce misleading
+    ratios purely by chance.</p>
+        <p><strong>Wilson 95% Confidence Intervals.</strong> For each group we compute
+    a Wilson score interval around its selection rate. Unlike the naive normal interval,
+    the Wilson interval remains accurate for small or skewed samples. If the intervals of
+    two groups do not overlap, their rates differ with at least 95% confidence. This makes
+    disparity claims robust to sample size: a large gap between huge groups is significant,
+    while the same gap between tiny groups may not be.</p>
+        <p><strong>Chi-Square Test of Independence.</strong> Tests the null hypothesis
+    that group membership and loan outcome are statistically independent (i.e., all groups
+    share the same underlying approval rate). A p-value below 0.05 means the observed
+    differences in rates across groups are unlikely to have arisen by chance alone.
+    Unlike the four-fifths rule, this test weighs evidence strength by sample size rather
+    than flagging any raw gap. Groups with fewer than 5 records are pooled to keep the
+    test valid.</p>
+      </div>
+      <div class="metric-cards">
+        <div class="card"><span class="card-label">DP Difference</span><span class="card-value">0.6533</span></div>
+        <div class="card"><span class="card-label">DP Ratio</span><span class="card-value">0.0000</span></div>
+        <div class="card"><span class="card-label">Chi-Square</span><span class="card-value">307.6</span></div>
+        <div class="card"><span class="card-label">p-value</span><span class="card-value">1.01e-61</span></div>
+        <div class="card"><span class="card-label">Groups</span><span class="card-value">9</span></div>
+        <div class="card bad-card"><span class="card-label">Verdict</span><span class="card-value">POTENTIAL BIAS - fails four-fifths rule</span></div>
+      </div>
+      <div class="conclusion bad">
+        <strong>Conclusion:</strong> The ratio (0.000) falls below the 0.80 four-fifths threshold, indicating disparate impact. The highest-rate group (Joint, 65.3%) is approved at 0.0% of the rate of the lowest-rate group (Free Form Text Only, 0.0%). The chi-square test rejects independence (p = 1.01e-61), though the extreme groups' confidence intervals overlap - the disparity is significant overall but may be driven by mid-sized groups rather than the extremes. <strong>Caveat:</strong> at least one group has fewer than 50 records, so its rate may be statistically unreliable.
+      </div>
+      <table>
+        <thead><tr><th>Group</th><th>Count</th><th>Selection Rate</th><th>95% CI (Wilson)</th><th style="width:30%">Rate</th></tr></thead>
+        <tbody>
+        <tr>
+          <td class="group">Joint</td>
+          <td>649</td>
+          <td>0.6533</td>
+          <td>[0.616, 0.689]</td>
+          <td class="bar-cell"><div class="bar" style="width:65%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">White</td>
+          <td>20,414</td>
+          <td>0.6103</td>
+          <td>[0.604, 0.617]</td>
+          <td class="bar-cell"><div class="bar" style="width:61%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Race Not Available</td>
+          <td>2,412</td>
+          <td>0.5543</td>
+          <td>[0.534, 0.574]</td>
+          <td class="bar-cell"><div class="bar" style="width:55%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Asian</td>
+          <td>3,089</td>
+          <td>0.5371</td>
+          <td>[0.519, 0.555]</td>
+          <td class="bar-cell"><div class="bar" style="width:53%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Black or African American</td>
+          <td>1,198</td>
+          <td>0.4324</td>
+          <td>[0.405, 0.461]</td>
+          <td class="bar-cell"><div class="bar" style="width:43%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">2 or more minority races</td>
+          <td>64</td>
+          <td>0.4062</td>
+          <td>[0.295, 0.529]</td>
+          <td class="bar-cell"><div class="bar" style="width:40%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">American Indian or Alaska Native</td>
+          <td>253</td>
+          <td>0.3439</td>
+          <td>[0.288, 0.404]</td>
+          <td class="bar-cell"><div class="bar" style="width:34%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Native Hawaiian or Other Pacific Islander</td>
+          <td>62</td>
+          <td>0.3226</td>
+          <td>[0.220, 0.446]</td>
+          <td class="bar-cell"><div class="bar" style="width:32%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Free Form Text Only</td>
+          <td>1</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.793]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr></tbody>
+      </table>
+    </section>
+    <section class="metric-section">
+      <h2>derived_sex</h2>
+      <div class="explanation">
+        <h3>How these metrics work</h3>
+        <p><strong>Selection Rate.</strong> The proportion of records in a group
+    that received the positive outcome (loan originated). This is the raw group-level
+    approval rate and the basis for all demographic parity metrics.</p>
+        <p><strong>Demographic Parity Difference &amp; Ratio.</strong> The difference is
+    the gap between the highest and lowest group selection rates; the ratio is the lowest
+    rate divided by the highest. The <em>four-fifths (80%) rule</em> treats a ratio below
+    0.80 as evidence of disparate impact. <em>Limitation:</em> these are purely descriptive
+    thresholds and are sensitive to sample size - small groups can produce misleading
+    ratios purely by chance.</p>
+        <p><strong>Wilson 95% Confidence Intervals.</strong> For each group we compute
+    a Wilson score interval around its selection rate. Unlike the naive normal interval,
+    the Wilson interval remains accurate for small or skewed samples. If the intervals of
+    two groups do not overlap, their rates differ with at least 95% confidence. This makes
+    disparity claims robust to sample size: a large gap between huge groups is significant,
+    while the same gap between tiny groups may not be.</p>
+        <p><strong>Chi-Square Test of Independence.</strong> Tests the null hypothesis
+    that group membership and loan outcome are statistically independent (i.e., all groups
+    share the same underlying approval rate). A p-value below 0.05 means the observed
+    differences in rates across groups are unlikely to have arisen by chance alone.
+    Unlike the four-fifths rule, this test weighs evidence strength by sample size rather
+    than flagging any raw gap. Groups with fewer than 5 records are pooled to keep the
+    test valid.</p>
+      </div>
+      <div class="metric-cards">
+        <div class="card"><span class="card-label">DP Difference</span><span class="card-value">0.1754</span></div>
+        <div class="card"><span class="card-label">DP Ratio</span><span class="card-value">0.7427</span></div>
+        <div class="card"><span class="card-label">Chi-Square</span><span class="card-value">806.7</span></div>
+        <div class="card"><span class="card-label">p-value</span><span class="card-value">1.51e-174</span></div>
+        <div class="card"><span class="card-label">Groups</span><span class="card-value">4</span></div>
+        <div class="card bad-card"><span class="card-label">Verdict</span><span class="card-value">POTENTIAL BIAS - fails four-fifths rule</span></div>
+      </div>
+      <div class="conclusion bad">
+        <strong>Conclusion:</strong> The ratio (0.743) falls below the 0.80 four-fifths threshold, indicating disparate impact. The highest-rate group (Joint, 68.2%) is approved at 74.3% of the rate of the lowest-rate group (Male, 50.6%). <strong>Statistically significant:</strong> the 95% Wilson confidence intervals of the highest and lowest groups do not overlap, and the chi-square test of independence rejects the null hypothesis of equal rates (p = 1.51e-174). The gap is unlikely to be a sampling artifact.
+      </div>
+      <table>
+        <thead><tr><th>Group</th><th>Count</th><th>Selection Rate</th><th>95% CI (Wilson)</th><th style="width:30%">Rate</th></tr></thead>
+        <tbody>
+        <tr>
+          <td class="group">Joint</td>
+          <td>12,152</td>
+          <td>0.6818</td>
+          <td>[0.673, 0.690]</td>
+          <td class="bar-cell"><div class="bar" style="width:68%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Sex Not Available</td>
+          <td>488</td>
+          <td>0.6025</td>
+          <td>[0.558, 0.645]</td>
+          <td class="bar-cell"><div class="bar" style="width:60%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Female</td>
+          <td>6,198</td>
+          <td>0.5226</td>
+          <td>[0.510, 0.535]</td>
+          <td class="bar-cell"><div class="bar" style="width:52%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Male</td>
+          <td>9,304</td>
+          <td>0.5063</td>
+          <td>[0.496, 0.516]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr></tbody>
+      </table>
+    </section>
+    <section class="metric-section">
+      <h2>derived_ethnicity + derived_race</h2>
+      <div class="explanation">
+        <h3>How these metrics work</h3>
+        <p><strong>Selection Rate.</strong> The proportion of records in a group
+    that received the positive outcome (loan originated). This is the raw group-level
+    approval rate and the basis for all demographic parity metrics.</p>
+        <p><strong>Demographic Parity Difference &amp; Ratio.</strong> The difference is
+    the gap between the highest and lowest group selection rates; the ratio is the lowest
+    rate divided by the highest. The <em>four-fifths (80%) rule</em> treats a ratio below
+    0.80 as evidence of disparate impact. <em>Limitation:</em> these are purely descriptive
+    thresholds and are sensitive to sample size - small groups can produce misleading
+    ratios purely by chance.</p>
+        <p><strong>Wilson 95% Confidence Intervals.</strong> For each group we compute
+    a Wilson score interval around its selection rate. Unlike the naive normal interval,
+    the Wilson interval remains accurate for small or skewed samples. If the intervals of
+    two groups do not overlap, their rates differ with at least 95% confidence. This makes
+    disparity claims robust to sample size: a large gap between huge groups is significant,
+    while the same gap between tiny groups may not be.</p>
+        <p><strong>Chi-Square Test of Independence.</strong> Tests the null hypothesis
+    that group membership and loan outcome are statistically independent (i.e., all groups
+    share the same underlying approval rate). A p-value below 0.05 means the observed
+    differences in rates across groups are unlikely to have arisen by chance alone.
+    Unlike the four-fifths rule, this test weighs evidence strength by sample size rather
+    than flagging any raw gap. Groups with fewer than 5 records are pooled to keep the
+    test valid.</p>
+      </div>
+      <div class="metric-cards">
+        <div class="card"><span class="card-label">DP Difference</span><span class="card-value">0.6979</span></div>
+        <div class="card"><span class="card-label">DP Ratio</span><span class="card-value">0.0000</span></div>
+        <div class="card"><span class="card-label">Chi-Square</span><span class="card-value">867.6</span></div>
+        <div class="card"><span class="card-label">p-value</span><span class="card-value">1.29e-164</span></div>
+        <div class="card"><span class="card-label">Groups</span><span class="card-value">33</span></div>
+        <div class="card bad-card"><span class="card-label">Verdict</span><span class="card-value">POTENTIAL BIAS - fails four-fifths rule</span></div>
+      </div>
+      <div class="conclusion bad">
+        <strong>Conclusion:</strong> The ratio (0.000) falls below the 0.80 four-fifths threshold, indicating disparate impact. The highest-rate group (Joint & Joint, 69.8%) is approved at 0.0% of the rate of the lowest-rate group (Not Hispanic or Latino & Free Form Text Only, 0.0%). The chi-square test rejects independence (p = 1.29e-164), though the extreme groups' confidence intervals overlap - the disparity is significant overall but may be driven by mid-sized groups rather than the extremes. <strong>Caveat:</strong> at least one group has fewer than 50 records, so its rate may be statistically unreliable.
+      </div>
+      <table>
+        <thead><tr><th>Group</th><th>Count</th><th>Selection Rate</th><th>95% CI (Wilson)</th><th style="width:30%">Rate</th></tr></thead>
+        <tbody>
+        <tr>
+          <td class="group">Joint & Joint</td>
+          <td>96</td>
+          <td>0.6979</td>
+          <td>[0.600, 0.781]</td>
+          <td class="bar-cell"><div class="bar" style="width:69%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Race Not Available</td>
+          <td>36</td>
+          <td>0.6944</td>
+          <td>[0.531, 0.820]</td>
+          <td class="bar-cell"><div class="bar" style="width:69%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Joint</td>
+          <td>19</td>
+          <td>0.6842</td>
+          <td>[0.460, 0.846]</td>
+          <td class="bar-cell"><div class="bar" style="width:68%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Native Hawaiian or Other Pacific Islander</td>
+          <td>3</td>
+          <td>0.6667</td>
+          <td>[0.208, 0.939]</td>
+          <td class="bar-cell"><div class="bar" style="width:66%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & White</td>
+          <td>579</td>
+          <td>0.6615</td>
+          <td>[0.622, 0.699]</td>
+          <td class="bar-cell"><div class="bar" style="width:66%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Joint</td>
+          <td>515</td>
+          <td>0.6524</td>
+          <td>[0.610, 0.692]</td>
+          <td class="bar-cell"><div class="bar" style="width:65%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & White</td>
+          <td>16,577</td>
+          <td>0.6420</td>
+          <td>[0.635, 0.649]</td>
+          <td class="bar-cell"><div class="bar" style="width:64%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Race Not Available</td>
+          <td>335</td>
+          <td>0.5910</td>
+          <td>[0.538, 0.642]</td>
+          <td class="bar-cell"><div class="bar" style="width:59%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Race Not Available</td>
+          <td>1,423</td>
+          <td>0.5889</td>
+          <td>[0.563, 0.614]</td>
+          <td class="bar-cell"><div class="bar" style="width:58%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & White</td>
+          <td>393</td>
+          <td>0.5573</td>
+          <td>[0.508, 0.606]</td>
+          <td class="bar-cell"><div class="bar" style="width:55%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Asian</td>
+          <td>2,835</td>
+          <td>0.5464</td>
+          <td>[0.528, 0.565]</td>
+          <td class="bar-cell"><div class="bar" style="width:54%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & 2 or more minority races</td>
+          <td>15</td>
+          <td>0.5333</td>
+          <td>[0.301, 0.752]</td>
+          <td class="bar-cell"><div class="bar" style="width:53%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & 2 or more minority races</td>
+          <td>4</td>
+          <td>0.5000</td>
+          <td>[0.150, 0.850]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & 2 or more minority races</td>
+          <td>4</td>
+          <td>0.5000</td>
+          <td>[0.150, 0.850]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Asian</td>
+          <td>36</td>
+          <td>0.5000</td>
+          <td>[0.345, 0.655]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & American Indian or Alaska Native</td>
+          <td>6</td>
+          <td>0.5000</td>
+          <td>[0.188, 0.812]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Asian</td>
+          <td>65</td>
+          <td>0.4923</td>
+          <td>[0.375, 0.611]</td>
+          <td class="bar-cell"><div class="bar" style="width:49%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Black or African American</td>
+          <td>40</td>
+          <td>0.4750</td>
+          <td>[0.329, 0.625]</td>
+          <td class="bar-cell"><div class="bar" style="width:47%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Race Not Available</td>
+          <td>618</td>
+          <td>0.4466</td>
+          <td>[0.408, 0.486]</td>
+          <td class="bar-cell"><div class="bar" style="width:44%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Black or African American</td>
+          <td>1,087</td>
+          <td>0.4351</td>
+          <td>[0.406, 0.465]</td>
+          <td class="bar-cell"><div class="bar" style="width:43%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & White</td>
+          <td>2,865</td>
+          <td>0.4237</td>
+          <td>[0.406, 0.442]</td>
+          <td class="bar-cell"><div class="bar" style="width:42%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Black or African American</td>
+          <td>26</td>
+          <td>0.4231</td>
+          <td>[0.255, 0.611]</td>
+          <td class="bar-cell"><div class="bar" style="width:42%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Joint</td>
+          <td>19</td>
+          <td>0.4211</td>
+          <td>[0.231, 0.637]</td>
+          <td class="bar-cell"><div class="bar" style="width:42%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Asian</td>
+          <td>153</td>
+          <td>0.3922</td>
+          <td>[0.318, 0.471]</td>
+          <td class="bar-cell"><div class="bar" style="width:39%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Native Hawaiian or Other Pacific Islander</td>
+          <td>27</td>
+          <td>0.3704</td>
+          <td>[0.215, 0.558]</td>
+          <td class="bar-cell"><div class="bar" style="width:37%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & American Indian or Alaska Native</td>
+          <td>102</td>
+          <td>0.3529</td>
+          <td>[0.267, 0.449]</td>
+          <td class="bar-cell"><div class="bar" style="width:35%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & American Indian or Alaska Native</td>
+          <td>138</td>
+          <td>0.3478</td>
+          <td>[0.273, 0.430]</td>
+          <td class="bar-cell"><div class="bar" style="width:34%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & 2 or more minority races</td>
+          <td>41</td>
+          <td>0.3415</td>
+          <td>[0.216, 0.495]</td>
+          <td class="bar-cell"><div class="bar" style="width:34%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Black or African American</td>
+          <td>45</td>
+          <td>0.3333</td>
+          <td>[0.214, 0.479]</td>
+          <td class="bar-cell"><div class="bar" style="width:33%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Native Hawaiian or Other Pacific Islander</td>
+          <td>29</td>
+          <td>0.2759</td>
+          <td>[0.147, 0.457]</td>
+          <td class="bar-cell"><div class="bar" style="width:27%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Native Hawaiian or Other Pacific Islander</td>
+          <td>3</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.562]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & American Indian or Alaska Native</td>
+          <td>7</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.354]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Free Form Text Only</td>
+          <td>1</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.793]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr></tbody>
+      </table>
+    </section>
+    <section class="metric-section">
+      <h2>derived_ethnicity + derived_sex</h2>
+      <div class="explanation">
+        <h3>How these metrics work</h3>
+        <p><strong>Selection Rate.</strong> The proportion of records in a group
+    that received the positive outcome (loan originated). This is the raw group-level
+    approval rate and the basis for all demographic parity metrics.</p>
+        <p><strong>Demographic Parity Difference &amp; Ratio.</strong> The difference is
+    the gap between the highest and lowest group selection rates; the ratio is the lowest
+    rate divided by the highest. The <em>four-fifths (80%) rule</em> treats a ratio below
+    0.80 as evidence of disparate impact. <em>Limitation:</em> these are purely descriptive
+    thresholds and are sensitive to sample size - small groups can produce misleading
+    ratios purely by chance.</p>
+        <p><strong>Wilson 95% Confidence Intervals.</strong> For each group we compute
+    a Wilson score interval around its selection rate. Unlike the naive normal interval,
+    the Wilson interval remains accurate for small or skewed samples. If the intervals of
+    two groups do not overlap, their rates differ with at least 95% confidence. This makes
+    disparity claims robust to sample size: a large gap between huge groups is significant,
+    while the same gap between tiny groups may not be.</p>
+        <p><strong>Chi-Square Test of Independence.</strong> Tests the null hypothesis
+    that group membership and loan outcome are statistically independent (i.e., all groups
+    share the same underlying approval rate). A p-value below 0.05 means the observed
+    differences in rates across groups are unlikely to have arisen by chance alone.
+    Unlike the four-fifths rule, this test weighs evidence strength by sample size rather
+    than flagging any raw gap. Groups with fewer than 5 records are pooled to keep the
+    test valid.</p>
+      </div>
+      <div class="metric-cards">
+        <div class="card"><span class="card-label">DP Difference</span><span class="card-value">0.3098</span></div>
+        <div class="card"><span class="card-label">DP Ratio</span><span class="card-value">0.5601</span></div>
+        <div class="card"><span class="card-label">Chi-Square</span><span class="card-value">1172.6</span></div>
+        <div class="card"><span class="card-label">p-value</span><span class="card-value">1.32e-241</span></div>
+        <div class="card"><span class="card-label">Groups</span><span class="card-value">15</span></div>
+        <div class="card bad-card"><span class="card-label">Verdict</span><span class="card-value">POTENTIAL BIAS - fails four-fifths rule</span></div>
+      </div>
+      <div class="conclusion bad">
+        <strong>Conclusion:</strong> The ratio (0.560) falls below the 0.80 four-fifths threshold, indicating disparate impact. The highest-rate group (Not Hispanic or Latino & Joint, 70.4%) is approved at 56.0% of the rate of the lowest-rate group (Hispanic or Latino & Male, 39.4%). <strong>Statistically significant:</strong> the 95% Wilson confidence intervals of the highest and lowest groups do not overlap, and the chi-square test of independence rejects the null hypothesis of equal rates (p = 1.32e-241). The gap is unlikely to be a sampling artifact. <strong>Caveat:</strong> at least one group has fewer than 50 records, so its rate may be statistically unreliable.
+      </div>
+      <table>
+        <thead><tr><th>Group</th><th>Count</th><th>Selection Rate</th><th>95% CI (Wilson)</th><th style="width:30%">Rate</th></tr></thead>
+        <tbody>
+        <tr>
+          <td class="group">Not Hispanic or Latino & Joint</td>
+          <td>9,724</td>
+          <td>0.7042</td>
+          <td>[0.695, 0.713]</td>
+          <td class="bar-cell"><div class="bar" style="width:70%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Joint</td>
+          <td>700</td>
+          <td>0.6714</td>
+          <td>[0.636, 0.705]</td>
+          <td class="bar-cell"><div class="bar" style="width:67%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Sex Not Available</td>
+          <td>6</td>
+          <td>0.6667</td>
+          <td>[0.300, 0.903]</td>
+          <td class="bar-cell"><div class="bar" style="width:66%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Joint</td>
+          <td>712</td>
+          <td>0.6447</td>
+          <td>[0.609, 0.679]</td>
+          <td class="bar-cell"><div class="bar" style="width:64%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Sex Not Available</td>
+          <td>470</td>
+          <td>0.6043</td>
+          <td>[0.559, 0.647]</td>
+          <td class="bar-cell"><div class="bar" style="width:60%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Female</td>
+          <td>4,906</td>
+          <td>0.5516</td>
+          <td>[0.538, 0.565]</td>
+          <td class="bar-cell"><div class="bar" style="width:55%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Male</td>
+          <td>6,880</td>
+          <td>0.5372</td>
+          <td>[0.525, 0.549]</td>
+          <td class="bar-cell"><div class="bar" style="width:53%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Joint</td>
+          <td>1,016</td>
+          <td>0.5000</td>
+          <td>[0.469, 0.531]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Sex Not Available</td>
+          <td>12</td>
+          <td>0.5000</td>
+          <td>[0.254, 0.746]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Male</td>
+          <td>600</td>
+          <td>0.4850</td>
+          <td>[0.445, 0.525]</td>
+          <td class="bar-cell"><div class="bar" style="width:48%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Male</td>
+          <td>52</td>
+          <td>0.4808</td>
+          <td>[0.351, 0.613]</td>
+          <td class="bar-cell"><div class="bar" style="width:48%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Female</td>
+          <td>34</td>
+          <td>0.4706</td>
+          <td>[0.315, 0.633]</td>
+          <td class="bar-cell"><div class="bar" style="width:47%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Female</td>
+          <td>265</td>
+          <td>0.4264</td>
+          <td>[0.368, 0.487]</td>
+          <td class="bar-cell"><div class="bar" style="width:42%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Female</td>
+          <td>993</td>
+          <td>0.4068</td>
+          <td>[0.377, 0.438]</td>
+          <td class="bar-cell"><div class="bar" style="width:40%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Male</td>
+          <td>1,772</td>
+          <td>0.3945</td>
+          <td>[0.372, 0.417]</td>
+          <td class="bar-cell"><div class="bar" style="width:39%; background:#e76f51"></div></td>
+        </tr></tbody>
+      </table>
+    </section>
+    <section class="metric-section">
+      <h2>derived_race + derived_sex</h2>
+      <div class="explanation">
+        <h3>How these metrics work</h3>
+        <p><strong>Selection Rate.</strong> The proportion of records in a group
+    that received the positive outcome (loan originated). This is the raw group-level
+    approval rate and the basis for all demographic parity metrics.</p>
+        <p><strong>Demographic Parity Difference &amp; Ratio.</strong> The difference is
+    the gap between the highest and lowest group selection rates; the ratio is the lowest
+    rate divided by the highest. The <em>four-fifths (80%) rule</em> treats a ratio below
+    0.80 as evidence of disparate impact. <em>Limitation:</em> these are purely descriptive
+    thresholds and are sensitive to sample size - small groups can produce misleading
+    ratios purely by chance.</p>
+        <p><strong>Wilson 95% Confidence Intervals.</strong> For each group we compute
+    a Wilson score interval around its selection rate. Unlike the naive normal interval,
+    the Wilson interval remains accurate for small or skewed samples. If the intervals of
+    two groups do not overlap, their rates differ with at least 95% confidence. This makes
+    disparity claims robust to sample size: a large gap between huge groups is significant,
+    while the same gap between tiny groups may not be.</p>
+        <p><strong>Chi-Square Test of Independence.</strong> Tests the null hypothesis
+    that group membership and loan outcome are statistically independent (i.e., all groups
+    share the same underlying approval rate). A p-value below 0.05 means the observed
+    differences in rates across groups are unlikely to have arisen by chance alone.
+    Unlike the four-fifths rule, this test weighs evidence strength by sample size rather
+    than flagging any raw gap. Groups with fewer than 5 records are pooled to keep the
+    test valid.</p>
+      </div>
+      <div class="metric-cards">
+        <div class="card"><span class="card-label">DP Difference</span><span class="card-value">1.0000</span></div>
+        <div class="card"><span class="card-label">DP Ratio</span><span class="card-value">0.0000</span></div>
+        <div class="card"><span class="card-label">Chi-Square</span><span class="card-value">1064.0</span></div>
+        <div class="card"><span class="card-label">p-value</span><span class="card-value">6.47e-207</span></div>
+        <div class="card"><span class="card-label">Groups</span><span class="card-value">30</span></div>
+        <div class="card bad-card"><span class="card-label">Verdict</span><span class="card-value">POTENTIAL BIAS - fails four-fifths rule</span></div>
+      </div>
+      <div class="conclusion bad">
+        <strong>Conclusion:</strong> The ratio (0.000) falls below the 0.80 four-fifths threshold, indicating disparate impact. The highest-rate group (2 or more minority races & Sex Not Available, 100.0%) is approved at 0.0% of the rate of the lowest-rate group (Free Form Text Only & Joint, 0.0%). The chi-square test rejects independence (p = 6.47e-207), though the extreme groups' confidence intervals overlap - the disparity is significant overall but may be driven by mid-sized groups rather than the extremes. <strong>Caveat:</strong> at least one group has fewer than 50 records, so its rate may be statistically unreliable.
+      </div>
+      <table>
+        <thead><tr><th>Group</th><th>Count</th><th>Selection Rate</th><th>95% CI (Wilson)</th><th style="width:30%">Rate</th></tr></thead>
+        <tbody>
+        <tr>
+          <td class="group">2 or more minority races & Sex Not Available</td>
+          <td>1</td>
+          <td>1.0000</td>
+          <td>[0.207, 1.000]</td>
+          <td class="bar-cell"><div class="bar" style="width:100%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Black or African American & Sex Not Available</td>
+          <td>1</td>
+          <td>1.0000</td>
+          <td>[0.207, 1.000]</td>
+          <td class="bar-cell"><div class="bar" style="width:100%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Male</td>
+          <td>28</td>
+          <td>0.7143</td>
+          <td>[0.529, 0.847]</td>
+          <td class="bar-cell"><div class="bar" style="width:71%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">White & Joint</td>
+          <td>9,152</td>
+          <td>0.7073</td>
+          <td>[0.698, 0.717]</td>
+          <td class="bar-cell"><div class="bar" style="width:70%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Joint</td>
+          <td>613</td>
+          <td>0.6509</td>
+          <td>[0.612, 0.688]</td>
+          <td class="bar-cell"><div class="bar" style="width:65%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Race Not Available & Joint</td>
+          <td>768</td>
+          <td>0.6432</td>
+          <td>[0.609, 0.676]</td>
+          <td class="bar-cell"><div class="bar" style="width:64%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Female</td>
+          <td>8</td>
+          <td>0.6250</td>
+          <td>[0.306, 0.863]</td>
+          <td class="bar-cell"><div class="bar" style="width:62%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Race Not Available & Sex Not Available</td>
+          <td>465</td>
+          <td>0.6108</td>
+          <td>[0.566, 0.654]</td>
+          <td class="bar-cell"><div class="bar" style="width:61%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Asian & Joint</td>
+          <td>1,345</td>
+          <td>0.5911</td>
+          <td>[0.565, 0.617]</td>
+          <td class="bar-cell"><div class="bar" style="width:59%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">2 or more minority races & Joint</td>
+          <td>9</td>
+          <td>0.5556</td>
+          <td>[0.267, 0.811]</td>
+          <td class="bar-cell"><div class="bar" style="width:55%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Native Hawaiian or Other Pacific Islander & Female</td>
+          <td>11</td>
+          <td>0.5455</td>
+          <td>[0.280, 0.787]</td>
+          <td class="bar-cell"><div class="bar" style="width:54%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">White & Female</td>
+          <td>4,602</td>
+          <td>0.5454</td>
+          <td>[0.531, 0.560]</td>
+          <td class="bar-cell"><div class="bar" style="width:54%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">White & Male</td>
+          <td>6,644</td>
+          <td>0.5220</td>
+          <td>[0.510, 0.534]</td>
+          <td class="bar-cell"><div class="bar" style="width:52%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Asian & Male</td>
+          <td>1,161</td>
+          <td>0.5022</td>
+          <td>[0.473, 0.531]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Race Not Available & Male</td>
+          <td>779</td>
+          <td>0.4865</td>
+          <td>[0.452, 0.522]</td>
+          <td class="bar-cell"><div class="bar" style="width:48%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Asian & Female</td>
+          <td>578</td>
+          <td>0.4844</td>
+          <td>[0.444, 0.525]</td>
+          <td class="bar-cell"><div class="bar" style="width:48%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">American Indian or Alaska Native & Joint</td>
+          <td>36</td>
+          <td>0.4722</td>
+          <td>[0.320, 0.630]</td>
+          <td class="bar-cell"><div class="bar" style="width:47%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Black or African American & Joint</td>
+          <td>212</td>
+          <td>0.4575</td>
+          <td>[0.392, 0.525]</td>
+          <td class="bar-cell"><div class="bar" style="width:45%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Race Not Available & Female</td>
+          <td>400</td>
+          <td>0.4500</td>
+          <td>[0.402, 0.499]</td>
+          <td class="bar-cell"><div class="bar" style="width:45%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Black or African American & Female</td>
+          <td>516</td>
+          <td>0.4438</td>
+          <td>[0.402, 0.487]</td>
+          <td class="bar-cell"><div class="bar" style="width:44%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">White & Sex Not Available</td>
+          <td>16</td>
+          <td>0.4375</td>
+          <td>[0.231, 0.668]</td>
+          <td class="bar-cell"><div class="bar" style="width:43%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Black or African American & Male</td>
+          <td>469</td>
+          <td>0.4072</td>
+          <td>[0.364, 0.452]</td>
+          <td class="bar-cell"><div class="bar" style="width:40%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">2 or more minority races & Male</td>
+          <td>37</td>
+          <td>0.4054</td>
+          <td>[0.263, 0.565]</td>
+          <td class="bar-cell"><div class="bar" style="width:40%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">American Indian or Alaska Native & Female</td>
+          <td>66</td>
+          <td>0.3636</td>
+          <td>[0.258, 0.484]</td>
+          <td class="bar-cell"><div class="bar" style="width:36%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Native Hawaiian or Other Pacific Islander & Joint</td>
+          <td>16</td>
+          <td>0.3125</td>
+          <td>[0.142, 0.556]</td>
+          <td class="bar-cell"><div class="bar" style="width:31%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">American Indian or Alaska Native & Male</td>
+          <td>151</td>
+          <td>0.3046</td>
+          <td>[0.237, 0.382]</td>
+          <td class="bar-cell"><div class="bar" style="width:30%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">2 or more minority races & Female</td>
+          <td>17</td>
+          <td>0.2941</td>
+          <td>[0.133, 0.531]</td>
+          <td class="bar-cell"><div class="bar" style="width:29%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Native Hawaiian or Other Pacific Islander & Male</td>
+          <td>35</td>
+          <td>0.2571</td>
+          <td>[0.142, 0.421]</td>
+          <td class="bar-cell"><div class="bar" style="width:25%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Asian & Sex Not Available</td>
+          <td>5</td>
+          <td>0.2000</td>
+          <td>[0.036, 0.624]</td>
+          <td class="bar-cell"><div class="bar" style="width:20%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Free Form Text Only & Joint</td>
+          <td>1</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.793]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr></tbody>
+      </table>
+    </section>
+    <section class="metric-section">
+      <h2>derived_ethnicity + derived_race + derived_sex</h2>
+      <div class="explanation">
+        <h3>How these metrics work</h3>
+        <p><strong>Selection Rate.</strong> The proportion of records in a group
+    that received the positive outcome (loan originated). This is the raw group-level
+    approval rate and the basis for all demographic parity metrics.</p>
+        <p><strong>Demographic Parity Difference &amp; Ratio.</strong> The difference is
+    the gap between the highest and lowest group selection rates; the ratio is the lowest
+    rate divided by the highest. The <em>four-fifths (80%) rule</em> treats a ratio below
+    0.80 as evidence of disparate impact. <em>Limitation:</em> these are purely descriptive
+    thresholds and are sensitive to sample size - small groups can produce misleading
+    ratios purely by chance.</p>
+        <p><strong>Wilson 95% Confidence Intervals.</strong> For each group we compute
+    a Wilson score interval around its selection rate. Unlike the naive normal interval,
+    the Wilson interval remains accurate for small or skewed samples. If the intervals of
+    two groups do not overlap, their rates differ with at least 95% confidence. This makes
+    disparity claims robust to sample size: a large gap between huge groups is significant,
+    while the same gap between tiny groups may not be.</p>
+        <p><strong>Chi-Square Test of Independence.</strong> Tests the null hypothesis
+    that group membership and loan outcome are statistically independent (i.e., all groups
+    share the same underlying approval rate). A p-value below 0.05 means the observed
+    differences in rates across groups are unlikely to have arisen by chance alone.
+    Unlike the four-fifths rule, this test weighs evidence strength by sample size rather
+    than flagging any raw gap. Groups with fewer than 5 records are pooled to keep the
+    test valid.</p>
+      </div>
+      <div class="metric-cards">
+        <div class="card"><span class="card-label">DP Difference</span><span class="card-value">1.0000</span></div>
+        <div class="card"><span class="card-label">DP Ratio</span><span class="card-value">0.0000</span></div>
+        <div class="card"><span class="card-label">Chi-Square</span><span class="card-value">1499.2</span></div>
+        <div class="card"><span class="card-label">p-value</span><span class="card-value">2.53e-268</span></div>
+        <div class="card"><span class="card-label">Groups</span><span class="card-value">101</span></div>
+        <div class="card bad-card"><span class="card-label">Verdict</span><span class="card-value">POTENTIAL BIAS - fails four-fifths rule</span></div>
+      </div>
+      <div class="conclusion bad">
+        <strong>Conclusion:</strong> The ratio (0.000) falls below the 0.80 four-fifths threshold, indicating disparate impact. The highest-rate group (Ethnicity Not Available & 2 or more minority races & Sex Not Available, 100.0%) is approved at 0.0% of the rate of the lowest-rate group (Not Hispanic or Latino & Free Form Text Only & Joint, 0.0%). The chi-square test rejects independence (p = 2.53e-268), though the extreme groups' confidence intervals overlap - the disparity is significant overall but may be driven by mid-sized groups rather than the extremes. <strong>Caveat:</strong> at least one group has fewer than 50 records, so its rate may be statistically unreliable.
+      </div>
+      <table>
+        <thead><tr><th>Group</th><th>Count</th><th>Selection Rate</th><th>95% CI (Wilson)</th><th style="width:30%">Rate</th></tr></thead>
+        <tbody>
+        <tr>
+          <td class="group">Ethnicity Not Available & 2 or more minority races & Sex Not Available</td>
+          <td>1</td>
+          <td>1.0000</td>
+          <td>[0.207, 1.000]</td>
+          <td class="bar-cell"><div class="bar" style="width:100%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & 2 or more minority races & Joint</td>
+          <td>1</td>
+          <td>1.0000</td>
+          <td>[0.207, 1.000]</td>
+          <td class="bar-cell"><div class="bar" style="width:100%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Joint & Male</td>
+          <td>1</td>
+          <td>1.0000</td>
+          <td>[0.207, 1.000]</td>
+          <td class="bar-cell"><div class="bar" style="width:100%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & 2 or more minority races & Joint</td>
+          <td>1</td>
+          <td>1.0000</td>
+          <td>[0.207, 1.000]</td>
+          <td class="bar-cell"><div class="bar" style="width:100%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Joint & Male</td>
+          <td>1</td>
+          <td>1.0000</td>
+          <td>[0.207, 1.000]</td>
+          <td class="bar-cell"><div class="bar" style="width:100%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Black or African American & Sex Not Available</td>
+          <td>1</td>
+          <td>1.0000</td>
+          <td>[0.207, 1.000]</td>
+          <td class="bar-cell"><div class="bar" style="width:100%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Native Hawaiian or Other Pacific Islander & Joint</td>
+          <td>1</td>
+          <td>1.0000</td>
+          <td>[0.207, 1.000]</td>
+          <td class="bar-cell"><div class="bar" style="width:100%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Race Not Available & Sex Not Available</td>
+          <td>5</td>
+          <td>0.8000</td>
+          <td>[0.376, 0.964]</td>
+          <td class="bar-cell"><div class="bar" style="width:80%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Race Not Available & Sex Not Available</td>
+          <td>5</td>
+          <td>0.8000</td>
+          <td>[0.376, 0.964]</td>
+          <td class="bar-cell"><div class="bar" style="width:80%; background:#2a9d8f"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Native Hawaiian or Other Pacific Islander & Female</td>
+          <td>4</td>
+          <td>0.7500</td>
+          <td>[0.301, 0.954]</td>
+          <td class="bar-cell"><div class="bar" style="width:75%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Joint & Female</td>
+          <td>4</td>
+          <td>0.7500</td>
+          <td>[0.301, 0.954]</td>
+          <td class="bar-cell"><div class="bar" style="width:75%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & White & Joint</td>
+          <td>7,646</td>
+          <td>0.7318</td>
+          <td>[0.722, 0.742]</td>
+          <td class="bar-cell"><div class="bar" style="width:73%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Race Not Available & Joint</td>
+          <td>32</td>
+          <td>0.7188</td>
+          <td>[0.546, 0.844]</td>
+          <td class="bar-cell"><div class="bar" style="width:71%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Joint & Male</td>
+          <td>24</td>
+          <td>0.7083</td>
+          <td>[0.508, 0.851]</td>
+          <td class="bar-cell"><div class="bar" style="width:70%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Joint & Joint</td>
+          <td>90</td>
+          <td>0.7000</td>
+          <td>[0.599, 0.785]</td>
+          <td class="bar-cell"><div class="bar" style="width:70%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & White & Joint</td>
+          <td>188</td>
+          <td>0.6968</td>
+          <td>[0.628, 0.758]</td>
+          <td class="bar-cell"><div class="bar" style="width:69%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Race Not Available & Joint</td>
+          <td>125</td>
+          <td>0.6880</td>
+          <td>[0.602, 0.763]</td>
+          <td class="bar-cell"><div class="bar" style="width:68%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Race Not Available & Joint</td>
+          <td>437</td>
+          <td>0.6728</td>
+          <td>[0.627, 0.715]</td>
+          <td class="bar-cell"><div class="bar" style="width:67%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & White & Joint</td>
+          <td>536</td>
+          <td>0.6698</td>
+          <td>[0.629, 0.708]</td>
+          <td class="bar-cell"><div class="bar" style="width:66%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Joint & Joint</td>
+          <td>18</td>
+          <td>0.6667</td>
+          <td>[0.437, 0.837]</td>
+          <td class="bar-cell"><div class="bar" style="width:66%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Black or African American & Joint</td>
+          <td>3</td>
+          <td>0.6667</td>
+          <td>[0.208, 0.939]</td>
+          <td class="bar-cell"><div class="bar" style="width:66%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Joint & Female</td>
+          <td>3</td>
+          <td>0.6667</td>
+          <td>[0.208, 0.939]</td>
+          <td class="bar-cell"><div class="bar" style="width:66%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Joint & Joint</td>
+          <td>488</td>
+          <td>0.6496</td>
+          <td>[0.606, 0.691]</td>
+          <td class="bar-cell"><div class="bar" style="width:64%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Black or African American & Joint</td>
+          <td>14</td>
+          <td>0.6429</td>
+          <td>[0.388, 0.837]</td>
+          <td class="bar-cell"><div class="bar" style="width:64%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & American Indian or Alaska Native & Joint</td>
+          <td>11</td>
+          <td>0.6364</td>
+          <td>[0.354, 0.848]</td>
+          <td class="bar-cell"><div class="bar" style="width:63%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Race Not Available & Sex Not Available</td>
+          <td>455</td>
+          <td>0.6066</td>
+          <td>[0.561, 0.650]</td>
+          <td class="bar-cell"><div class="bar" style="width:60%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Asian & Joint</td>
+          <td>1,253</td>
+          <td>0.6034</td>
+          <td>[0.576, 0.630]</td>
+          <td class="bar-cell"><div class="bar" style="width:60%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & White & Male</td>
+          <td>24</td>
+          <td>0.5833</td>
+          <td>[0.388, 0.755]</td>
+          <td class="bar-cell"><div class="bar" style="width:58%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Asian & Joint</td>
+          <td>12</td>
+          <td>0.5833</td>
+          <td>[0.320, 0.807]</td>
+          <td class="bar-cell"><div class="bar" style="width:58%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & White & Female</td>
+          <td>3,755</td>
+          <td>0.5774</td>
+          <td>[0.561, 0.593]</td>
+          <td class="bar-cell"><div class="bar" style="width:57%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Black or African American & Female</td>
+          <td>14</td>
+          <td>0.5714</td>
+          <td>[0.326, 0.786]</td>
+          <td class="bar-cell"><div class="bar" style="width:57%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Native Hawaiian or Other Pacific Islander & Joint</td>
+          <td>7</td>
+          <td>0.5714</td>
+          <td>[0.250, 0.842]</td>
+          <td class="bar-cell"><div class="bar" style="width:57%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & White & Male</td>
+          <td>5,172</td>
+          <td>0.5565</td>
+          <td>[0.543, 0.570]</td>
+          <td class="bar-cell"><div class="bar" style="width:55%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Asian & Joint</td>
+          <td>22</td>
+          <td>0.5455</td>
+          <td>[0.347, 0.731]</td>
+          <td class="bar-cell"><div class="bar" style="width:54%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & 2 or more minority races & Male</td>
+          <td>11</td>
+          <td>0.5455</td>
+          <td>[0.280, 0.787]</td>
+          <td class="bar-cell"><div class="bar" style="width:54%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Race Not Available & Female</td>
+          <td>80</td>
+          <td>0.5375</td>
+          <td>[0.429, 0.643]</td>
+          <td class="bar-cell"><div class="bar" style="width:53%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & White & Female</td>
+          <td>19</td>
+          <td>0.5263</td>
+          <td>[0.317, 0.727]</td>
+          <td class="bar-cell"><div class="bar" style="width:52%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Race Not Available & Joint</td>
+          <td>174</td>
+          <td>0.5230</td>
+          <td>[0.449, 0.596]</td>
+          <td class="bar-cell"><div class="bar" style="width:52%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Race Not Available & Male</td>
+          <td>125</td>
+          <td>0.5200</td>
+          <td>[0.433, 0.606]</td>
+          <td class="bar-cell"><div class="bar" style="width:52%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Race Not Available & Male</td>
+          <td>375</td>
+          <td>0.5147</td>
+          <td>[0.464, 0.565]</td>
+          <td class="bar-cell"><div class="bar" style="width:51%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Asian & Male</td>
+          <td>1,049</td>
+          <td>0.5081</td>
+          <td>[0.478, 0.538]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Native Hawaiian or Other Pacific Islander & Female</td>
+          <td>2</td>
+          <td>0.5000</td>
+          <td>[0.095, 0.905]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Asian & Female</td>
+          <td>18</td>
+          <td>0.5000</td>
+          <td>[0.290, 0.710]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Asian & Sex Not Available</td>
+          <td>2</td>
+          <td>0.5000</td>
+          <td>[0.095, 0.905]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & White & Sex Not Available</td>
+          <td>12</td>
+          <td>0.5000</td>
+          <td>[0.254, 0.746]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & 2 or more minority races & Male</td>
+          <td>2</td>
+          <td>0.5000</td>
+          <td>[0.095, 0.905]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & 2 or more minority races & Joint</td>
+          <td>6</td>
+          <td>0.5000</td>
+          <td>[0.188, 0.812]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & American Indian or Alaska Native & Male</td>
+          <td>2</td>
+          <td>0.5000</td>
+          <td>[0.095, 0.905]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Race Not Available & Male</td>
+          <td>4</td>
+          <td>0.5000</td>
+          <td>[0.150, 0.850]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Joint & Male</td>
+          <td>2</td>
+          <td>0.5000</td>
+          <td>[0.095, 0.905]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & American Indian or Alaska Native & Joint</td>
+          <td>4</td>
+          <td>0.5000</td>
+          <td>[0.150, 0.850]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & 2 or more minority races & Male</td>
+          <td>2</td>
+          <td>0.5000</td>
+          <td>[0.095, 0.905]</td>
+          <td class="bar-cell"><div class="bar" style="width:50%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & White & Joint</td>
+          <td>782</td>
+          <td>0.4962</td>
+          <td>[0.461, 0.531]</td>
+          <td class="bar-cell"><div class="bar" style="width:49%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Asian & Female</td>
+          <td>531</td>
+          <td>0.4896</td>
+          <td>[0.447, 0.532]</td>
+          <td class="bar-cell"><div class="bar" style="width:48%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Race Not Available & Female</td>
+          <td>156</td>
+          <td>0.4808</td>
+          <td>[0.404, 0.559]</td>
+          <td class="bar-cell"><div class="bar" style="width:48%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Asian & Male</td>
+          <td>34</td>
+          <td>0.4706</td>
+          <td>[0.315, 0.633]</td>
+          <td class="bar-cell"><div class="bar" style="width:47%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & American Indian or Alaska Native & Female</td>
+          <td>28</td>
+          <td>0.4643</td>
+          <td>[0.295, 0.642]</td>
+          <td class="bar-cell"><div class="bar" style="width:46%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & White & Male</td>
+          <td>126</td>
+          <td>0.4603</td>
+          <td>[0.376, 0.547]</td>
+          <td class="bar-cell"><div class="bar" style="width:46%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Asian & Male</td>
+          <td>11</td>
+          <td>0.4545</td>
+          <td>[0.213, 0.720]</td>
+          <td class="bar-cell"><div class="bar" style="width:45%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Black or African American & Joint</td>
+          <td>187</td>
+          <td>0.4492</td>
+          <td>[0.380, 0.521]</td>
+          <td class="bar-cell"><div class="bar" style="width:44%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Black or African American & Female</td>
+          <td>484</td>
+          <td>0.4463</td>
+          <td>[0.403, 0.491]</td>
+          <td class="bar-cell"><div class="bar" style="width:44%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Asian & Male</td>
+          <td>67</td>
+          <td>0.4328</td>
+          <td>[0.321, 0.552]</td>
+          <td class="bar-cell"><div class="bar" style="width:43%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Race Not Available & Male</td>
+          <td>275</td>
+          <td>0.4327</td>
+          <td>[0.375, 0.492]</td>
+          <td class="bar-cell"><div class="bar" style="width:43%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Black or African American & Male</td>
+          <td>415</td>
+          <td>0.4145</td>
+          <td>[0.368, 0.462]</td>
+          <td class="bar-cell"><div class="bar" style="width:41%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Joint & Joint</td>
+          <td>17</td>
+          <td>0.4118</td>
+          <td>[0.216, 0.640]</td>
+          <td class="bar-cell"><div class="bar" style="width:41%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & White & Female</td>
+          <td>761</td>
+          <td>0.4047</td>
+          <td>[0.370, 0.440]</td>
+          <td class="bar-cell"><div class="bar" style="width:40%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Native Hawaiian or Other Pacific Islander & Female</td>
+          <td>5</td>
+          <td>0.4000</td>
+          <td>[0.118, 0.769]</td>
+          <td class="bar-cell"><div class="bar" style="width:40%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & American Indian or Alaska Native & Joint</td>
+          <td>20</td>
+          <td>0.4000</td>
+          <td>[0.219, 0.613]</td>
+          <td class="bar-cell"><div class="bar" style="width:40%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & White & Male</td>
+          <td>1,322</td>
+          <td>0.3918</td>
+          <td>[0.366, 0.418]</td>
+          <td class="bar-cell"><div class="bar" style="width:39%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Black or African American & Male</td>
+          <td>23</td>
+          <td>0.3913</td>
+          <td>[0.222, 0.592]</td>
+          <td class="bar-cell"><div class="bar" style="width:39%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Asian & Female</td>
+          <td>26</td>
+          <td>0.3846</td>
+          <td>[0.224, 0.575]</td>
+          <td class="bar-cell"><div class="bar" style="width:38%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Race Not Available & Female</td>
+          <td>164</td>
+          <td>0.3780</td>
+          <td>[0.307, 0.454]</td>
+          <td class="bar-cell"><div class="bar" style="width:37%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Black or African American & Male</td>
+          <td>24</td>
+          <td>0.3750</td>
+          <td>[0.212, 0.573]</td>
+          <td class="bar-cell"><div class="bar" style="width:37%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & White & Female</td>
+          <td>67</td>
+          <td>0.3582</td>
+          <td>[0.254, 0.478]</td>
+          <td class="bar-cell"><div class="bar" style="width:35%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Native Hawaiian or Other Pacific Islander & Male</td>
+          <td>17</td>
+          <td>0.3529</td>
+          <td>[0.173, 0.587]</td>
+          <td class="bar-cell"><div class="bar" style="width:35%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Asian & Joint</td>
+          <td>58</td>
+          <td>0.3448</td>
+          <td>[0.236, 0.473]</td>
+          <td class="bar-cell"><div class="bar" style="width:34%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Asian & Female</td>
+          <td>3</td>
+          <td>0.3333</td>
+          <td>[0.061, 0.792]</td>
+          <td class="bar-cell"><div class="bar" style="width:33%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & 2 or more minority races & Female</td>
+          <td>3</td>
+          <td>0.3333</td>
+          <td>[0.061, 0.792]</td>
+          <td class="bar-cell"><div class="bar" style="width:33%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & American Indian or Alaska Native & Male</td>
+          <td>56</td>
+          <td>0.3214</td>
+          <td>[0.214, 0.452]</td>
+          <td class="bar-cell"><div class="bar" style="width:32%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & 2 or more minority races & Male</td>
+          <td>22</td>
+          <td>0.3182</td>
+          <td>[0.164, 0.527]</td>
+          <td class="bar-cell"><div class="bar" style="width:31%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & American Indian or Alaska Native & Female</td>
+          <td>35</td>
+          <td>0.3143</td>
+          <td>[0.186, 0.480]</td>
+          <td class="bar-cell"><div class="bar" style="width:31%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & 2 or more minority races & Female</td>
+          <td>13</td>
+          <td>0.3077</td>
+          <td>[0.127, 0.576]</td>
+          <td class="bar-cell"><div class="bar" style="width:30%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Black or African American & Female</td>
+          <td>13</td>
+          <td>0.3077</td>
+          <td>[0.127, 0.576]</td>
+          <td class="bar-cell"><div class="bar" style="width:30%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & American Indian or Alaska Native & Male</td>
+          <td>90</td>
+          <td>0.3000</td>
+          <td>[0.215, 0.401]</td>
+          <td class="bar-cell"><div class="bar" style="width:30%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Black or African American & Joint</td>
+          <td>8</td>
+          <td>0.2500</td>
+          <td>[0.071, 0.591]</td>
+          <td class="bar-cell"><div class="bar" style="width:25%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & White & Sex Not Available</td>
+          <td>4</td>
+          <td>0.2500</td>
+          <td>[0.046, 0.699]</td>
+          <td class="bar-cell"><div class="bar" style="width:25%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Black or African American & Female</td>
+          <td>5</td>
+          <td>0.2000</td>
+          <td>[0.036, 0.624]</td>
+          <td class="bar-cell"><div class="bar" style="width:20%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Native Hawaiian or Other Pacific Islander & Male</td>
+          <td>16</td>
+          <td>0.1875</td>
+          <td>[0.066, 0.430]</td>
+          <td class="bar-cell"><div class="bar" style="width:18%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & Black or African American & Male</td>
+          <td>7</td>
+          <td>0.1429</td>
+          <td>[0.026, 0.513]</td>
+          <td class="bar-cell"><div class="bar" style="width:14%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & American Indian or Alaska Native & Female</td>
+          <td>3</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.562]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & 2 or more minority races & Joint</td>
+          <td>1</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.793]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & American Indian or Alaska Native & Joint</td>
+          <td>1</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.793]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Native Hawaiian or Other Pacific Islander & Joint</td>
+          <td>1</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.793]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Asian & Sex Not Available</td>
+          <td>1</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.793]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & American Indian or Alaska Native & Male</td>
+          <td>3</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.562]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Ethnicity Not Available & Native Hawaiian or Other Pacific Islander & Male</td>
+          <td>2</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.658]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Joint & 2 or more minority races & Female</td>
+          <td>1</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.793]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Hispanic or Latino & Joint & Female</td>
+          <td>1</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.793]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Asian & Sex Not Available</td>
+          <td>2</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.658]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Native Hawaiian or Other Pacific Islander & Joint</td>
+          <td>7</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.354]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr>
+
+        <tr>
+          <td class="group">Not Hispanic or Latino & Free Form Text Only & Joint</td>
+          <td>1</td>
+          <td>0.0000</td>
+          <td>[0.000, 0.793]</td>
+          <td class="bar-cell"><div class="bar" style="width:0%; background:#e76f51"></div></td>
+        </tr></tbody>
+      </table>
+    </section>
+  <section class="metric-section">
+    <h2>Overall Conclusions</h2>
+    <ul>
+      <li><strong>Four-fifths rule (descriptive):</strong> attributes or combinations whose
+      demographic parity ratio falls below <strong>0.80</strong> are flagged as showing
+      potential disparate impact in origination rates.</li>
+      <li><strong>Statistical significance (sample-size robust):</strong> each verdict is
+      cross-checked with Wilson 95% confidence intervals and a chi-square test of
+      independence. A disparity is only treated as strong evidence of bias when the
+      extreme groups' confidence intervals do not overlap and the chi-square test
+      rejects independence (p &lt; 0.05). This prevents small groups from producing
+      false alarms (or hiding real gaps) purely due to sample size.</li>
+      <li><strong>'Joint' sex category:</strong> records with <code>derived_sex = Joint</code>
+      represent joint applications (typically two applicants of different sexes).
+      They are kept as a distinct group but are not directly comparable to
+      single-applicant sex groups; filter them out for a strict Male vs. Female
+      comparison.</li>
+      <li><strong>Intersectional groups</strong> (e.g., ethnicity + sex) often show
+      larger disparities than single attributes, because disadvantages can compound
+      across multiple protected characteristics.</li>
+      <li>These are <strong>outcome-based metrics only</strong>. Observed disparities do
+      not prove discriminatory intent or causation; legitimate underwriting factors
+      (income, loan amount, credit history) may explain part of the gap. A complete
+      audit would fit a predictive model and compare per-group error rates
+      (equalized odds / equal opportunity).</li>
+      <li>Groups with very small sample sizes should be interpreted cautiously;
+      the Wilson intervals in each section make this uncertainty explicit.</li>
+    </ul>
+  </section>
+</main>
+<footer>Generated automatically by fairness_report.py using fairlearn.</footer>
+</body>
+</html>
